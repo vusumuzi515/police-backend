@@ -1,0 +1,16 @@
+# Render Web Service (not Static Site).
+# Dashboard must use: repo vusumuzi515/police-backend, branch master, Root Directory blank.
+services:
+  - type: web
+    name: police-biso
+    runtime: node
+    plan: free
+    branch: master
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20"
