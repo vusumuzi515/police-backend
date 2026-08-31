@@ -1,0 +1,14 @@
+node_modules/
+citizen-mobile/node_modules/
+police-admin/node_modules/
+police-admin/dist/
+.env
+.env.*
+!.env.example
+citizen-mobile/.env
+police-admin/.env
+uploads/*
+!uploads/.gitkeep
+.DS_Store
+*.log
+.expo/

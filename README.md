@@ -1,15 +1,50 @@
 # Eswatini Police — Citizen + Admin
 
+The **backend is the POLICE APP folder itself** (not `citizen-mobile`).  
+Host this on Render: `server.js` at the repo root, start with `node server.js`.
+
 ## Folders
 
-| Folder | What it is |
-|--------|------------|
-| `citizen-mobile/` | Citizen Expo app (phone) |
-| `police-admin/` | Communications admin dashboard (Vite) |
-| `server.js` | Shared API (port 3000) |
-| `data/` / `uploads/` | API database and media |
+| Path | What it is |
+|------|------------|
+| `server.js` | **API to host** (this is the backend) |
+| `package.json` | `npm start` → `node server.js` |
+| `data/` | JSON database |
+| `uploads/` | Photos / audio |
+| `citizen-mobile/` | Phone app — do **not** set this as Render root |
+| `police-admin/` | Dashboard — run locally or build separately |
 
-## Run
+## Host on Render (new Web Service)
+
+1. On GitHub, create repo **`police-backend`** (empty, no README) if it does not exist.
+2. Push this folder:
+
+```powershell
+cd "C:\INTELLIGENCECENTER\POLICE APP"
+git push origin master
+```
+
+3. Render → **New +** → **Web Service** (not Static Site).
+4. Connect GitHub repo **`vusumuzi515/police-backend`**.
+5. Settings:
+
+| Field | Value |
+|--------|--------|
+| Name | `police-biso` (or any name — copy the `.onrender.com` URL) |
+| Branch | `master` |
+| Root Directory | **leave empty** |
+| Runtime | Node |
+| Build Command | `npm install` |
+| Start Command | `node server.js` |
+
+6. Create Web Service → wait until logs show `API: http://localhost:.../`
+7. Open `https://YOUR-SERVICE.onrender.com/` — you should see **Eswatini Police API**.
+
+Paste that URL into `citizen-mobile/.env` and `eas.json` as `EXPO_PUBLIC_API_URL`, then rebuild the APK.
+
+Free Render apps sleep after idle; the first request can take ~1 minute.
+
+## Run locally
 
 ### 1. API (required)
 
