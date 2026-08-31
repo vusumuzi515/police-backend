@@ -4,9 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "dev": "npx vite",
+    "build": "tsc --noEmit && npx vite build",
+    "preview": "npx vite preview"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
