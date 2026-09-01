@@ -132,15 +132,22 @@ function writeDb(db) {
 async function fetchReportsFromSupabase() {
   if (!USE_SUPABASE) return null;
   try {
-    const { data, error } = await supabase
+    let result = await supabase
       .from('reports')
       .select('*')
-      .order('created_at', { ascending: false });
-    if (error) {
-      console.error('Supabase fetch reports error:', error);
+      .order('timestamp', { ascending: false });
+
+    if (result.error && result.error.code === '42703') {
+      result = await supabase
+        .from('reports')
+        .select('*');
+    }
+
+    if (result.error) {
+      console.error('Supabase fetch reports error:', result.error);
       return null;
     }
-    return data || [];
+    return result.data || [];
   } catch (err) {
     console.error('Supabase fetch reports exception:', err);
     return null;
