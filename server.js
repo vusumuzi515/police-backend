@@ -746,7 +746,7 @@ async function createCitizenReport(body, files) {
       id: report.id,
       type: report.type,
       status: report.status,
-      created_at: report.timestamp,
+      timestamp: report.timestamp,
       payload: report.payload
     };
     const result = await createReportInSupabase(supabaseReport);
