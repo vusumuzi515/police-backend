@@ -1,9 +1,10 @@
 /**
- * TECHLAW Police shared API
+ * TECHLAW Police shared API with Supabase backend
  * Run: npm install && npm start  (from POLICE APP folder)
  * Citizen app: citizen-mobile/ (Expo) → EXPO_PUBLIC_API_URL → this server
  * Admin app:   police-admin/ (Vite) → http://localhost:5174 or /communications after build
  * Default admin login: username MELU101, password Melu123!
+ * Database: Supabase PostgreSQL with Storage bucket for evidence
  */
 const express = require('express');
 const cors = require('cors');
@@ -11,11 +12,21 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
+const { createClient } = require('@supabase/supabase-js');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'prototype-db.json');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
+
+// Supabase client
+const SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabase = SUPABASE_URL && SUPABASE_SERVICE_KEY 
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+  : null;
+
+const USE_SUPABASE = supabase !== null;
 
 const app = express();
 app.use(cors());
@@ -107,6 +118,71 @@ function readDb() {
 function writeDb(db) {
   db.settings = normalizeSettings(db.settings);
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
+}
+
+// ============= SUPABASE HELPERS (for reports and evidence) =============
+
+async function fetchReportsFromSupabase() {
+  if (!USE_SUPABASE) return null;
+  try {
+    const { data, error } = await supabase
+      .from('reports')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.error('Supabase fetch reports error:', error);
+      return null;
+    }
+    return data || [];
+  } catch (err) {
+    console.error('Supabase fetch reports exception:', err);
+    return null;
+  }
+}
+
+async function createReportInSupabase(report) {
+  if (!USE_SUPABASE) return null;
+  try {
+    const { data, error } = await supabase
+      .from('reports')
+      .insert([report])
+      .select();
+    if (error) {
+      console.error('Supabase create report error:', error);
+      return null;
+    }
+    return data?.[0] || null;
+  } catch (err) {
+    console.error('Supabase create report exception:', err);
+    return null;
+  }
+}
+
+async function uploadEvidenceToSupabase(bucket, fileName, fileBuffer, mimeType) {
+  if (!USE_SUPABASE) return null;
+  try {
+    const { data, error } = await supabase
+      .storage
+      .from(bucket)
+      .upload(fileName, fileBuffer, {
+        contentType: mimeType,
+        upsert: false
+      });
+    if (error) {
+      console.error('Supabase upload error:', error);
+      return null;
+    }
+    return data?.path || null;
+  } catch (err) {
+    console.error('Supabase upload exception:', err);
+    return null;
+  }
+}
+
+function getSupabaseStorageUrl(bucket, path) {
+  if (!USE_SUPABASE) return null;
+  const baseUrl = SUPABASE_URL.replace(/\/$/, '');
+  return `${baseUrl}/storage/v1/object/public/${bucket}/${path}`;
 }
 
 const DEFAULT_SETTINGS = {
@@ -519,13 +595,18 @@ app.post('/api/citizen/logout', citizenAuthMiddleware, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/reports', uploadEvidence.array('evidence', 10), (req, res) => {
-  const files = Array.isArray(req.files) ? req.files : [];
-  const result = createCitizenReport(req.body || {}, files);
-  res.status(201).json(result);
+app.post('/api/reports', uploadEvidence.array('evidence', 10), async (req, res) => {
+  try {
+    const files = Array.isArray(req.files) ? req.files : [];
+    const result = await createCitizenReport(req.body || {}, files);
+    res.status(201).json(result);
+  } catch (err) {
+    console.error('/api/reports error:', err);
+    res.status(500).json({ error: 'Could not save report' });
+  }
 });
 
-app.post('/api/reports/json', express.json({ limit: '25mb' }), (req, res) => {
+app.post('/api/reports/json', express.json({ limit: '25mb' }), async (req, res) => {
   try {
     const body = req.body || {};
     const files = [];
@@ -551,7 +632,7 @@ app.post('/api/reports/json', express.json({ limit: '25mb' }), (req, res) => {
         });
       }
     }
-    const result = createCitizenReport(body, files);
+    const result = await createCitizenReport(body, files);
     res.status(201).json(result);
   } catch (err) {
     console.error('reports/json failed', err);
@@ -579,7 +660,7 @@ app.post('/api/reports/:id/evidence', uploadEvidence.single('evidence'), (req, r
   res.json({ ok: true, id });
 });
 
-function createCitizenReport(body, files) {
+async function createCitizenReport(body, files) {
   const id = 'REP-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex').toUpperCase();
   const parseJsonField = function (v, fallback) {
     if (typeof v !== 'string') return v == null ? fallback : v;
@@ -595,8 +676,34 @@ function createCitizenReport(body, files) {
   }
   if (typeof payload.location === 'string') payload.location = parseJsonField(payload.location, payload.location);
   if (typeof payload.deviceInfo === 'string') payload.deviceInfo = parseJsonField(payload.deviceInfo, {});
-  if (files.length) {
-    payload.evidenceFiles = files.map((f) => ({
+  
+  let evidenceFiles = [];
+  
+  // Handle file uploads to Supabase Storage if available
+  if (files.length && USE_SUPABASE) {
+    for (const f of files) {
+      try {
+        const fileBuffer = fs.readFileSync(path.join(UPLOADS_DIR, f.filename));
+        const supabasePath = `${id}/${f.filename}`;
+        const uploadedPath = await uploadEvidenceToSupabase('evidence', supabasePath, fileBuffer, f.mimetype);
+        if (uploadedPath) {
+          evidenceFiles.push({
+            name: f.originalname || f.filename,
+            storedName: uploadedPath,
+            size: f.size || 0,
+            type: f.mimetype || 'application/octet-stream',
+            url: getSupabaseStorageUrl('evidence', uploadedPath)
+          });
+        }
+      } catch (err) {
+        console.error('Error uploading evidence to Supabase:', err);
+      }
+    }
+  }
+  
+  // Fall back to local files if Supabase upload failed or not available
+  if (!evidenceFiles.length && files.length) {
+    evidenceFiles = files.map((f) => ({
       name: f.originalname || f.filename,
       storedName: f.filename,
       size: f.size || 0,
@@ -604,8 +711,13 @@ function createCitizenReport(body, files) {
       url: '/uploads/' + f.filename
     }));
   } else if (typeof payload.evidenceFiles === 'string') {
-    payload.evidenceFiles = parseJsonField(payload.evidenceFiles, []);
+    evidenceFiles = parseJsonField(payload.evidenceFiles, []);
   }
+  
+  if (evidenceFiles.length) {
+    payload.evidenceFiles = evidenceFiles;
+  }
+  
   const report = {
     id,
     type: payload.type || 'unknown',
@@ -613,16 +725,51 @@ function createCitizenReport(body, files) {
     timestamp: new Date().toISOString(),
     payload: payload
   };
+  
+  // Save to Supabase if available
+  if (USE_SUPABASE) {
+    const supabaseReport = {
+      id: report.id,
+      type: report.type,
+      status: report.status,
+      created_at: report.timestamp,
+      payload: report.payload
+    };
+    await createReportInSupabase(supabaseReport);
+  }
+  
+  // Also save to local JSON for backup
   const db = readDb();
   db.reports.unshift(report);
   writeDb(db);
+  
   return { id, report };
 }
 
-app.get('/api/reports', authMiddleware, (req, res) => {
-  const db = readDb();
-  purgeExpiredRecords(db);
-  res.json(db.reports);
+app.get('/api/reports', authMiddleware, async (req, res) => {
+  try {
+    let reports;
+    
+    // Try to fetch from Supabase first
+    if (USE_SUPABASE) {
+      reports = await fetchReportsFromSupabase();
+    }
+    
+    // Fall back to local JSON if Supabase not available
+    if (!reports) {
+      const db = readDb();
+      purgeExpiredRecords(db);
+      reports = db.reports;
+    }
+    
+    res.json(reports);
+  } catch (err) {
+    console.error('Error fetching reports:', err);
+    // Fall back to local JSON on error
+    const db = readDb();
+    purgeExpiredRecords(db);
+    res.json(db.reports);
+  }
 });
 
 app.get('/api/settings', authMiddleware, (req, res) => {
