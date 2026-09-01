@@ -149,23 +149,23 @@ async function fetchReportsFromSupabase() {
 
 async function createReportInSupabase(report) {
   if (!USE_SUPABASE) {
-    console.log('[createReportInSupabase] USE_SUPABASE is false, skipping');
+    console.error('🔴 [createReportInSupabase] USE_SUPABASE is false, skipping');
     return null;
   }
   try {
-    console.log('[createReportInSupabase] Inserting report:', report.id);
+    console.error('🟡 [createReportInSupabase] Inserting into database:', report.id);
     const { data, error } = await supabase
       .from('reports')
       .insert([report])
       .select();
     if (error) {
-      console.error('[createReportInSupabase] Supabase insert error:', error);
+      console.error('🔴 [createReportInSupabase] ERROR:', JSON.stringify(error));
       return null;
     }
-    console.log('[createReportInSupabase] Successfully inserted:', data?.[0]?.id);
+    console.error('✅ [createReportInSupabase] INSERTED:', data?.[0]?.id);
     return data?.[0] || null;
   } catch (err) {
-    console.error('[createReportInSupabase] Exception:', err.message);
+    console.error('🔴 [createReportInSupabase] EXCEPTION:', err.message);
     return null;
   }
 }
@@ -674,6 +674,7 @@ app.post('/api/reports/:id/evidence', uploadEvidence.single('evidence'), (req, r
 
 async function createCitizenReport(body, files) {
   const id = 'REP-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex').toUpperCase();
+  console.error('🔴 [createCitizenReport] Started with ID:', id);
   const parseJsonField = function (v, fallback) {
     if (typeof v !== 'string') return v == null ? fallback : v;
     try {
@@ -740,7 +741,7 @@ async function createCitizenReport(body, files) {
   
   // Save to Supabase if available
   if (USE_SUPABASE) {
-    console.log('[createCitizenReport] Attempting to save to Supabase. USE_SUPABASE=', USE_SUPABASE);
+    console.error('🟡 [createCitizenReport] USE_SUPABASE=true, saving to database...');
     const supabaseReport = {
       id: report.id,
       type: report.type,
@@ -749,9 +750,9 @@ async function createCitizenReport(body, files) {
       payload: report.payload
     };
     const result = await createReportInSupabase(supabaseReport);
-    console.log('[createCitizenReport] Supabase save result:', result ? 'SUCCESS' : 'FAILED');
+    console.error('🟡 [createCitizenReport] Supabase result:', result ? '✅ SAVED' : '❌ FAILED');
   } else {
-    console.log('[createCitizenReport] USE_SUPABASE is false, using local JSON only');
+    console.error('🔴 [createCitizenReport] USE_SUPABASE=false, local JSON only');
   }
   
   // Also save to local JSON for backup
