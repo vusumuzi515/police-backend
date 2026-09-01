@@ -148,19 +148,24 @@ async function fetchReportsFromSupabase() {
 }
 
 async function createReportInSupabase(report) {
-  if (!USE_SUPABASE) return null;
+  if (!USE_SUPABASE) {
+    console.log('[createReportInSupabase] USE_SUPABASE is false, skipping');
+    return null;
+  }
   try {
+    console.log('[createReportInSupabase] Inserting report:', report.id);
     const { data, error } = await supabase
       .from('reports')
       .insert([report])
       .select();
     if (error) {
-      console.error('Supabase create report error:', error);
+      console.error('[createReportInSupabase] Supabase insert error:', error);
       return null;
     }
+    console.log('[createReportInSupabase] Successfully inserted:', data?.[0]?.id);
     return data?.[0] || null;
   } catch (err) {
-    console.error('Supabase create report exception:', err);
+    console.error('[createReportInSupabase] Exception:', err.message);
     return null;
   }
 }
@@ -735,6 +740,7 @@ async function createCitizenReport(body, files) {
   
   // Save to Supabase if available
   if (USE_SUPABASE) {
+    console.log('[createCitizenReport] Attempting to save to Supabase. USE_SUPABASE=', USE_SUPABASE);
     const supabaseReport = {
       id: report.id,
       type: report.type,
@@ -742,7 +748,10 @@ async function createCitizenReport(body, files) {
       created_at: report.timestamp,
       payload: report.payload
     };
-    await createReportInSupabase(supabaseReport);
+    const result = await createReportInSupabase(supabaseReport);
+    console.log('[createCitizenReport] Supabase save result:', result ? 'SUCCESS' : 'FAILED');
+  } else {
+    console.log('[createCitizenReport] USE_SUPABASE is false, using local JSON only');
   }
   
   // Also save to local JSON for backup
