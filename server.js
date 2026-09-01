@@ -28,6 +28,13 @@ const supabase = SUPABASE_URL && SUPABASE_SERVICE_KEY
 
 const USE_SUPABASE = supabase !== null;
 
+// Debug: Log Supabase configuration on startup
+console.log('=== SUPABASE CONFIGURATION ===');
+console.log('SUPABASE_URL:', SUPABASE_URL ? 'SET (' + SUPABASE_URL.substring(0, 30) + '...)' : 'NOT SET');
+console.log('SUPABASE_SERVICE_KEY:', SUPABASE_SERVICE_KEY ? 'SET (' + SUPABASE_SERVICE_KEY.substring(0, 20) + '...)' : 'NOT SET');
+console.log('USE_SUPABASE (client initialized):', USE_SUPABASE);
+console.log('==============================');
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
