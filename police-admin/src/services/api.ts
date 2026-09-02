@@ -189,6 +189,17 @@ const REPORT_LABELS: Record<string, string> = {
   emergency: 'Emergency alert',
 };
 
+const REPORT_TYPE_ALIASES: Record<string, string> = {
+  suspicious_activity: 'anonymous',
+  'suspicious-activity': 'anonymous',
+  tip: 'anonymous',
+  report_crime: 'crime',
+  hate_crime: 'hate',
+  traffic_issue: 'traffic',
+  cyber_crime: 'cyber',
+  domestic_abuse: 'domestic',
+};
+
 interface ServerReport {
   id: string;
   type: string;
@@ -238,14 +249,15 @@ function normalizeReportMessage(payload: ServerReport['payload']): string {
 export function normalizeReport(raw: ServerReport): CitizenReport {
   const p = raw.payload ?? {};
   const anon = p.anonymous === true || p.anonymous === 'true' || raw.type === 'anonymous';
+  const type = REPORT_TYPE_ALIASES[raw.type] ?? raw.type;
   const reportTitle =
     typeof (p as { reportTitle?: string }).reportTitle === 'string'
       ? (p as { reportTitle?: string }).reportTitle
       : undefined;
   return {
     id: raw.id,
-    type: raw.type,
-    title: reportTitle || (REPORT_LABELS[raw.type] ?? raw.type.replace(/_/g, ' ')),
+    type,
+    title: reportTitle || (REPORT_LABELS[type] ?? type.replace(/_/g, ' ')),
     message: normalizeReportMessage(p),
     status: raw.status || 'new',
     timestamp: raw.timestamp || new Date().toISOString(),

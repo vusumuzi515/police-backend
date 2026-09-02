@@ -364,7 +364,6 @@ function expireStaleDistressSessions(db) {
 }
 
 function listOpenDistressSessions(db) {
-  expireStaleDistressSessions(db);
   return db.distressSessions
     .filter((x) => x && (x.status === 'active' || x.status === 'acknowledged'))
     .sort((a, b) => {
