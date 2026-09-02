@@ -1,16 +1,23 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CitizenReport } from '../services/api';
 import { fetchReports, updateReportStatus } from '../services/api';
 
 export function useReportsInbox() {
   const [reports, setReports] = useState<CitizenReport[]>([]);
   const [loading, setLoading] = useState(true);
+  const loadingRequestRef = useRef<Promise<void> | null>(null);
 
   const load = useCallback(async () => {
+    if (loadingRequestRef.current) return loadingRequestRef.current;
     setLoading(true);
-    const data = await fetchReports();
-    setReports(data);
-    setLoading(false);
+    const request = fetchReports()
+      .then((data) => setReports(data))
+      .finally(() => {
+        setLoading(false);
+        loadingRequestRef.current = null;
+      });
+    loadingRequestRef.current = request;
+    return request;
   }, []);
 
   useEffect(() => {

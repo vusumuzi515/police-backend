@@ -39,15 +39,19 @@ export function useLiveMonitoring() {
   const [apiOnline, setApiOnline] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const knownIdsRef = useRef<Set<string>>(new Set());
+  const refreshingRef = useRef(false);
   const authenticated = Boolean(getAuthToken());
 
   const refresh = useCallback(async () => {
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
     const hasAuth = Boolean(getAuthToken());
     if (!hasAuth) {
       setSessions([]);
       setFetchError('Sign in required');
       setApiOnline(false);
       setLoading(false);
+      refreshingRef.current = false;
       return;
     }
 
@@ -86,6 +90,7 @@ export function useLiveMonitoring() {
       setFetchError('Cannot reach police server');
     } finally {
       setLoading(false);
+      refreshingRef.current = false;
     }
   }, []);
 

@@ -1,11 +1,71 @@
 export const API_BASE =
   import.meta.env.VITE_API_URL?.replace(/\/$/, '') || 'http://localhost:3000';
 
+const API_CACHE_PREFIX = 'police-admin-api-cache:';
+const apiCache = new Map<string, { value: unknown; expiresAt: number }>();
+const apiRequests = new Map<string, Promise<unknown>>();
+
+function readCached<T>(key: string): { value: T; expiresAt: number } | null {
+  const memory = apiCache.get(key);
+  if (memory) return memory as { value: T; expiresAt: number };
+  try {
+    const raw = sessionStorage.getItem(`${API_CACHE_PREFIX}${key}`);
+    if (!raw) return null;
+    const cached = JSON.parse(raw) as { value: T; expiresAt: number };
+    if (!Number.isFinite(cached.expiresAt)) return null;
+    apiCache.set(key, cached);
+    return cached;
+  } catch {
+    return null;
+  }
+}
+
+function writeCached<T>(key: string, value: T, ttlMs: number) {
+  const cached = { value, expiresAt: Date.now() + ttlMs };
+  apiCache.set(key, cached);
+  try {
+    sessionStorage.setItem(`${API_CACHE_PREFIX}${key}`, JSON.stringify(cached));
+  } catch {
+    /* memory cache remains available when storage is unavailable */
+  }
+}
+
+async function cachedRequest<T>(
+  key: string,
+  ttlMs: number,
+  request: () => Promise<T>,
+  fallback: T,
+): Promise<T> {
+  const cached = readCached<T>(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const pending = apiRequests.get(key);
+  if (pending) return pending as Promise<T>;
+
+  const requestPromise = request()
+    .then((value) => {
+      writeCached(key, value, ttlMs);
+      return value;
+    })
+    .catch(() => cached?.value ?? fallback)
+    .finally(() => apiRequests.delete(key));
+  apiRequests.set(key, requestPromise);
+  return requestPromise;
+}
+
+export function clearApiCache() {
+  apiCache.clear();
+  apiRequests.clear();
+  for (const key of Object.keys(sessionStorage)) {
+    if (key.startsWith(API_CACHE_PREFIX)) sessionStorage.removeItem(key);
+  }
+}
+
 export function getAuthToken(): string | null {
   return sessionStorage.getItem('police-admin-token');
 }
 
 export function setAuthToken(token: string) {
+  clearApiCache();
   sessionStorage.setItem('police-admin-token', token);
 }
 
@@ -36,6 +96,7 @@ export function clearAuthToken() {
 
 export function clearAuthSession() {
   sessionStorage.removeItem('police-admin-auth');
+  clearApiCache();
   clearAuthToken();
 }
 
@@ -200,17 +261,15 @@ export async function fetchActiveDistress(): Promise<DistressFetchResult> {
   const token = getAuthToken();
   if (!token) return { ok: false, reason: 'unauthorized' };
 
-  try {
+  return cachedRequest(`active-distress:${token}`, 2_000, async () => {
     const res = await fetch(`${API_BASE}/api/distress/active`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (res.status === 401) return { ok: false, reason: 'unauthorized' };
-    if (!res.ok) return { ok: false, reason: 'error' };
+    if (res.status === 401) return { ok: false, reason: 'unauthorized' as const };
+    if (!res.ok) return { ok: false, reason: 'error' as const };
     const data = await res.json();
-    return { ok: true, sessions: Array.isArray(data) ? data : [] };
-  } catch {
-    return { ok: false, reason: 'network' };
-  }
+    return { ok: true, sessions: Array.isArray(data) ? data : [] } as DistressFetchResult;
+  }, { ok: false, reason: 'network' });
 }
 
 export async function updateDistressSession(
@@ -236,13 +295,13 @@ export async function fetchReports(): Promise<CitizenReport[]> {
   const token = getAuthToken();
   if (!token) return [];
 
-  try {
+  return cachedRequest(`reports:${token}`, 15_000, async () => {
     const res = await fetch(`${API_BASE}/api/reports`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) return [];
+    if (!res.ok) throw new Error(`Reports request failed: ${res.status}`);
     const data = (await res.json()) as ServerReport[];
-    if (!Array.isArray(data)) return [];
+    if (!Array.isArray(data)) throw new Error('Invalid reports response');
     return data.flatMap((raw) => {
       try {
         return [normalizeReport(raw)];
@@ -250,9 +309,7 @@ export async function fetchReports(): Promise<CitizenReport[]> {
         return [];
       }
     });
-  } catch {
-    return [];
-  }
+  }, []);
 }
 
 export async function updateReportStatus(id: string, status: string): Promise<boolean> {
@@ -265,7 +322,9 @@ export async function updateReportStatus(id: string, status: string): Promise<bo
       headers: authHeaders(),
       body: JSON.stringify({ status }),
     });
-    return res.ok;
+    if (!res.ok) return false;
+    clearApiCache();
+    return true;
   } catch {
     return false;
   }
@@ -334,14 +393,13 @@ export async function updateSettings(
 }
 
 export async function fetchPublicNotices(): Promise<{ id: string; title: string; timestamp?: string }[]> {
-  try {
+  return cachedRequest('public-notices', 30_000, async () => {
     const res = await fetch(`${API_BASE}/api/notices`);
-    if (!res.ok) return [];
+    if (!res.ok) throw new Error(`Notices request failed: ${res.status}`);
     const data = await res.json();
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
+    if (!Array.isArray(data)) throw new Error('Invalid notices response');
+    return data;
+  }, []);
 }
 
 export async function publishNoticeToApi(notice: {
