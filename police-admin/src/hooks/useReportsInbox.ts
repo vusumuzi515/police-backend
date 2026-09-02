@@ -7,10 +7,10 @@ export function useReportsInbox() {
   const [loading, setLoading] = useState(true);
   const loadingRequestRef = useRef<Promise<void> | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (forceRefresh = false) => {
     if (loadingRequestRef.current) return loadingRequestRef.current;
     setLoading(true);
-    const request = fetchReports()
+    const request = fetchReports(forceRefresh)
       .then((data) => setReports(data))
       .finally(() => {
         setLoading(false);
@@ -22,7 +22,7 @@ export function useReportsInbox() {
 
   useEffect(() => {
     void load();
-    const id = setInterval(() => void load(), 8000);
+    const id = setInterval(() => void load(true), 60_000);
     return () => clearInterval(id);
   }, [load]);
 

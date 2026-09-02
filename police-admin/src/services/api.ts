@@ -36,9 +36,10 @@ async function cachedRequest<T>(
   ttlMs: number,
   request: () => Promise<T>,
   fallback: T,
+  forceRefresh = false,
 ): Promise<T> {
   const cached = readCached<T>(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cached.value;
   const pending = apiRequests.get(key);
   if (pending) return pending as Promise<T>;
 
@@ -308,7 +309,7 @@ export async function updateDistressSession(
   }
 }
 
-export async function fetchReports(): Promise<CitizenReport[]> {
+export async function fetchReports(forceRefresh = false): Promise<CitizenReport[]> {
   const token = getAuthToken();
   if (!token) return [];
   const cacheKey = `reports:v2:${token}`;
@@ -334,7 +335,7 @@ export async function fetchReports(): Promise<CitizenReport[]> {
     return [...byId.values()].sort(
       (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
     );
-  }, []);
+  }, [], forceRefresh);
 }
 
 export async function updateReportStatus(id: string, status: string): Promise<boolean> {

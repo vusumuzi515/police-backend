@@ -43,13 +43,24 @@ export function DashboardPage() {
   const [newReports, setNewReports] = useState(0);
 
   useEffect(() => {
-    void fetchActiveDistress().then((result) => {
-      if (result.ok) setActiveSessions(result.sessions.length);
-    });
-    void fetchReports().then((reports) => {
+    let mounted = true;
+    const load = async (forceRefresh = false) => {
+      const [distressResult, reports] = await Promise.all([
+        fetchActiveDistress(),
+        fetchReports(forceRefresh),
+      ]);
+      if (!mounted) return;
+      if (distressResult.ok) setActiveSessions(distressResult.sessions.length);
       setReportTotal(reports.length);
       setNewReports(reports.filter((r) => r.status === 'new').length);
-    });
+    };
+
+    void load();
+    const id = window.setInterval(() => void load(true), 60_000);
+    return () => {
+      mounted = false;
+      window.clearInterval(id);
+    };
   }, []);
 
   const live = notices.filter(isNoticeLive);
