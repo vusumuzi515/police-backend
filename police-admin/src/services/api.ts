@@ -9,7 +9,8 @@ function readCached<T>(key: string): { value: T; expiresAt: number } | null {
   const memory = apiCache.get(key);
   if (memory) return memory as { value: T; expiresAt: number };
   try {
-    const raw = sessionStorage.getItem(`${API_CACHE_PREFIX}${key}`);
+    const storageKey = `${API_CACHE_PREFIX}${key}`;
+    const raw = localStorage.getItem(storageKey) ?? sessionStorage.getItem(storageKey);
     if (!raw) return null;
     const cached = JSON.parse(raw) as { value: T; expiresAt: number };
     if (!Number.isFinite(cached.expiresAt)) return null;
@@ -24,7 +25,7 @@ function writeCached<T>(key: string, value: T, ttlMs: number) {
   const cached = { value, expiresAt: Date.now() + ttlMs };
   apiCache.set(key, cached);
   try {
-    sessionStorage.setItem(`${API_CACHE_PREFIX}${key}`, JSON.stringify(cached));
+    localStorage.setItem(`${API_CACHE_PREFIX}${key}`, JSON.stringify(cached));
   } catch {
     /* memory cache remains available when storage is unavailable */
   }
@@ -55,8 +56,10 @@ async function cachedRequest<T>(
 export function clearApiCache() {
   apiCache.clear();
   apiRequests.clear();
-  for (const key of Object.keys(sessionStorage)) {
-    if (key.startsWith(API_CACHE_PREFIX)) sessionStorage.removeItem(key);
+  for (const storage of [localStorage, sessionStorage]) {
+    for (const key of Object.keys(storage)) {
+      if (key.startsWith(API_CACHE_PREFIX)) storage.removeItem(key);
+    }
   }
 }
 
@@ -297,7 +300,9 @@ export async function updateDistressSession(
       headers: authHeaders(),
       body: JSON.stringify(body),
     });
-    return res.ok;
+    if (!res.ok) return false;
+    clearApiCache();
+    return true;
   } catch {
     return false;
   }
@@ -306,21 +311,29 @@ export async function updateDistressSession(
 export async function fetchReports(): Promise<CitizenReport[]> {
   const token = getAuthToken();
   if (!token) return [];
+  const cacheKey = `reports:v2:${token}`;
+  const previous = readCached<CitizenReport[]>(cacheKey)?.value ?? [];
 
-  return cachedRequest(`reports:${token}`, 15_000, async () => {
+  return cachedRequest(cacheKey, 15_000, async () => {
     const res = await fetch(`${API_BASE}/api/reports`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) throw new Error(`Reports request failed: ${res.status}`);
     const data = (await res.json()) as ServerReport[];
     if (!Array.isArray(data)) throw new Error('Invalid reports response');
-    return data.flatMap((raw) => {
+    const fetched = data.flatMap((raw) => {
       try {
         return [normalizeReport(raw)];
       } catch {
         return [];
       }
     });
+    if (!fetched.length && previous.length) return previous;
+    const byId = new Map(previous.map((report) => [report.id, report]));
+    for (const report of fetched) byId.set(report.id, report);
+    return [...byId.values()].sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+    );
   }, []);
 }
 
@@ -449,7 +462,9 @@ export async function publishNoticeToApi(notice: {
         attachmentUrl: notice.attachmentUrl || undefined,
       }),
     });
-    return res.ok;
+    if (!res.ok) return false;
+    clearApiCache();
+    return true;
   } catch {
     return false;
   }
