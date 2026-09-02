@@ -22,7 +22,7 @@ export function useReportsInbox() {
 
   useEffect(() => {
     void load();
-    const id = setInterval(() => void load(true), 60_000);
+    const id = setInterval(() => void load(true), 15_000);
     return () => clearInterval(id);
   }, [load]);
 

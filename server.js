@@ -204,6 +204,29 @@ function getSupabaseStorageUrl(bucket, path) {
   return `${baseUrl}/storage/v1/object/public/${bucket}/${path}`;
 }
 
+async function persistPanicAudio(sessionId, filename) {
+  if (!USE_SUPABASE || !filename) return;
+  try {
+    const localPath = path.join(UPLOADS_DIR, filename);
+    if (!fs.existsSync(localPath)) return;
+    const uploadedPath = await uploadEvidenceToSupabase(
+      'evidence',
+      `panic/${sessionId}/${filename}`,
+      fs.readFileSync(localPath),
+      filename.endsWith('.wav') ? 'audio/wav' : 'audio/mp4',
+    );
+    if (!uploadedPath) return;
+    const db = readDb();
+    const session = db.distressSessions.find((item) => item.id === sessionId);
+    if (!session) return;
+    session.audioUrl = getSupabaseStorageUrl('evidence', uploadedPath) || session.audioUrl;
+    session.audioStoragePath = uploadedPath;
+    writeDb(db);
+  } catch (err) {
+    console.error('Could not persist Get Help audio to Supabase Storage:', err);
+  }
+}
+
 const DEFAULT_SETTINGS = {
   /** Days to keep citizen reports on the dashboard. 0 = keep forever. */
   reportRetentionDays: 30,
@@ -929,14 +952,15 @@ function applyPanicToSession(db, body, audioFilename) {
   };
 }
 
-app.post('/api/citizen/emergency/panic', uploadAudio.single('audio'), (req, res) => {
+app.post('/api/citizen/emergency/panic', uploadAudio.single('audio'), async (req, res) => {
   const db = readDb();
   const result = applyPanicToSession(db, req.body || {}, req.file ? req.file.filename : null);
+  if (req.file) await persistPanicAudio(result.payload.sessionId, req.file.filename);
   res.status(result.status).json(result.payload);
 });
 
 /** JSON + base64 audio — reliable fallback when multipart upload fails on some phone networks. */
-app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), (req, res) => {
+app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), async (req, res) => {
   try {
     const body = req.body || {};
     const audioBase64 = body.audioBase64;
@@ -960,6 +984,7 @@ app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), (
 
     const db = readDb();
     const result = applyPanicToSession(db, body, filename);
+    await persistPanicAudio(result.payload.sessionId, filename);
     res.status(result.status).json(result.payload);
   } catch (err) {
     console.error('panic-json failed', err);

@@ -56,7 +56,7 @@ export function DashboardPage() {
     };
 
     void load();
-    const id = window.setInterval(() => void load(true), 60_000);
+    const id = window.setInterval(() => void load(true), 15_000);
     return () => {
       mounted = false;
       window.clearInterval(id);
