@@ -127,6 +127,81 @@ function writeDb(db) {
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
 }
 
+const DISTRESS_TABLE = 'distress_sessions';
+
+function distressRow(session) {
+  return {
+    id: session.id,
+    status: session.status,
+    started_at: session.startedAt || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    payload: session,
+  };
+}
+
+function distressSessionFromRow(row) {
+  const payload = row && row.payload && typeof row.payload === 'object' ? row.payload : {};
+  return {
+    ...payload,
+    id: row.id || payload.id,
+    status: row.status || payload.status || 'active',
+  };
+}
+
+async function fetchDistressSessionsFromSupabase() {
+  if (!USE_SUPABASE) return null;
+  const { data, error } = await supabase
+    .from(DISTRESS_TABLE)
+    .select('id,status,started_at,updated_at,payload')
+    .order('started_at', { ascending: false });
+  if (error) {
+    console.error('Supabase fetch distress sessions error:', error);
+    return null;
+  }
+  return (data || []).map(distressSessionFromRow);
+}
+
+async function saveDistressSessionToSupabase(session) {
+  if (!USE_SUPABASE) return true;
+  const { error } = await supabase.from(DISTRESS_TABLE).upsert(distressRow(session));
+  if (error) {
+    console.error('Supabase save distress session error:', error);
+    return false;
+  }
+  return true;
+}
+
+async function deleteDistressSessionFromSupabase(id) {
+  if (!USE_SUPABASE) return true;
+  const { error } = await supabase.from(DISTRESS_TABLE).delete().eq('id', id);
+  if (error) {
+    console.error('Supabase delete distress session error:', error);
+    return false;
+  }
+  return true;
+}
+
+async function loadDistressDb() {
+  const db = readDb();
+  const sessions = await fetchDistressSessionsFromSupabase();
+  if (USE_SUPABASE && !sessions) {
+    throw new Error('Supabase distress_sessions is unavailable');
+  }
+  if (sessions) db.distressSessions = sessions;
+  return db;
+}
+
+async function saveDistressDb(db) {
+  if (USE_SUPABASE) {
+    for (const session of db.distressSessions || []) {
+      const saved = await saveDistressSessionToSupabase(session);
+      if (!saved) throw new Error('Could not save distress session to Supabase');
+    }
+    return;
+  }
+  writeDb(db);
+}
+
 // ============= SUPABASE HELPERS (for reports and evidence) =============
 
 async function fetchReportsFromSupabase() {
@@ -216,12 +291,12 @@ async function persistPanicAudio(sessionId, filename) {
       filename.endsWith('.wav') ? 'audio/wav' : 'audio/mp4',
     );
     if (!uploadedPath) return;
-    const db = readDb();
+    const db = await loadDistressDb();
     const session = db.distressSessions.find((item) => item.id === sessionId);
     if (!session) return;
     session.audioUrl = getSupabaseStorageUrl('evidence', uploadedPath) || session.audioUrl;
     session.audioStoragePath = uploadedPath;
-    writeDb(db);
+    await saveDistressDb(db);
   } catch (err) {
     console.error('Could not persist Get Help audio to Supabase Storage:', err);
   }
@@ -319,7 +394,7 @@ function purgeExpiredRecords(db) {
   }
 
   if (settings.liveAlertRetentionDays > 0) {
-    const closedStatuses = new Set(['resolved', 'ended_by_citizen', 'expired']);
+    const closedStatuses = new Set(['assigned', 'resolved', 'ended_by_citizen', 'expired']);
     const kept = [];
     for (const session of db.distressSessions || []) {
       const isClosed = closedStatuses.has(session.status);
@@ -388,7 +463,12 @@ function expireStaleDistressSessions(db) {
 
 function listOpenDistressSessions(db) {
   return db.distressSessions
-    .filter((x) => x && (x.status === 'active' || x.status === 'acknowledged'))
+    .filter(
+      (x) =>
+        x &&
+        (x.status === 'active' || x.status === 'acknowledged') &&
+        !x.assignedOfficer,
+    )
     .sort((a, b) => {
       const pa = a.priority === 'high' ? 0 : 1;
       const pb = b.priority === 'high' ? 0 : 1;
@@ -865,7 +945,7 @@ app.get('/api/notices', (req, res) => {
 });
 
 // ----- Citizen mobile: Get Help (panic button with audio) -----
-function applyPanicToSession(db, body, audioFilename) {
+async function applyPanicToSession(db, body, audioFilename) {
   const lat = parseFloat(body.latitude);
   const lng = parseFloat(body.longitude);
   const existingId = body.sessionId;
@@ -896,7 +976,7 @@ function applyPanicToSession(db, body, audioFilename) {
       if (body.callerNumber) {
         s.callerNumber = String(body.callerNumber).trim();
       }
-      writeDb(db);
+      await saveDistressDb(db);
       return {
         status: 200,
         payload: {
@@ -939,7 +1019,7 @@ function applyPanicToSession(db, body, audioFilename) {
     });
   }
   db.distressSessions.unshift(session);
-  writeDb(db);
+  await saveDistressDb(db);
   return {
     status: 201,
     payload: {
@@ -953,8 +1033,8 @@ function applyPanicToSession(db, body, audioFilename) {
 }
 
 app.post('/api/citizen/emergency/panic', uploadAudio.single('audio'), async (req, res) => {
-  const db = readDb();
-  const result = applyPanicToSession(db, req.body || {}, req.file ? req.file.filename : null);
+  const db = await loadDistressDb();
+  const result = await applyPanicToSession(db, req.body || {}, req.file ? req.file.filename : null);
   if (req.file) await persistPanicAudio(result.payload.sessionId, req.file.filename);
   res.status(result.status).json(result.payload);
 });
@@ -982,8 +1062,8 @@ app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), a
       Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '-panic.' + ext;
     fs.writeFileSync(path.join(UPLOADS_DIR, filename), buffer);
 
-    const db = readDb();
-    const result = applyPanicToSession(db, body, filename);
+    const db = await loadDistressDb();
+    const result = await applyPanicToSession(db, body, filename);
     await persistPanicAudio(result.payload.sessionId, filename);
     res.status(result.status).json(result.payload);
   } catch (err) {
@@ -993,7 +1073,7 @@ app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), a
 });
 
 // ----- Live distress / Get Help (legacy web citizen) -----
-app.post('/api/distress/start', (req, res) => {
+app.post('/api/distress/start', async (req, res) => {
   const body = req.body || {};
   const id = 'DIST-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex').toUpperCase();
   const lat = parseFloat(body.lat);
@@ -1024,16 +1104,16 @@ app.post('/api/distress/start', (req, res) => {
       ts: new Date().toISOString()
     });
   }
-  const db = readDb();
+  const db = await loadDistressDb();
   db.distressSessions.unshift(session);
-  writeDb(db);
+  await saveDistressDb(db);
   res.status(201).json({
     sessionId: id,
     message: 'Police can now track this device. Keep app open when safe.'
   });
 });
 
-app.post('/api/distress/:id/ping', (req, res) => {
+app.post('/api/distress/:id/ping', async (req, res) => {
   const { id } = req.params;
   const { lat, lng, accuracy } = req.body || {};
   const la = parseFloat(lat);
@@ -1041,7 +1121,7 @@ app.post('/api/distress/:id/ping', (req, res) => {
   if (!Number.isFinite(la) || !Number.isFinite(ln)) {
     return res.status(400).json({ error: 'lat/lng required' });
   }
-  const db = readDb();
+  const db = await loadDistressDb();
   const s = db.distressSessions.find((x) => x.id === id && x.status === 'active');
   if (!s) return res.status(404).json({ error: 'Session not active' });
   s.lastLat = la;
@@ -1050,20 +1130,20 @@ app.post('/api/distress/:id/ping', (req, res) => {
   s.lastPingAt = new Date().toISOString();
   s.path.push({ lat: la, lng: ln, accuracy: s.lastAccuracy, ts: s.lastPingAt });
   if (s.path.length > 500) s.path = s.path.slice(-500);
-  writeDb(db);
+  await saveDistressDb(db);
   res.json({ ok: true });
 });
 
-app.get('/api/distress/active', authMiddleware, (req, res) => {
-  const db = readDb();
+app.get('/api/distress/active', authMiddleware, async (req, res) => {
+  const db = await loadDistressDb();
   if (!Array.isArray(db.distressSessions)) db.distressSessions = [];
   purgeExpiredRecords(db);
   res.json(listOpenDistressSessions(db));
 });
 
 /** Debug: same data without auth — prototype only; remove in production */
-app.get('/api/distress/active-debug', (req, res) => {
-  const db = readDb();
+app.get('/api/distress/active-debug', async (req, res) => {
+  const db = await loadDistressDb();
   if (!Array.isArray(db.distressSessions)) db.distressSessions = [];
   const active = listOpenDistressSessions(db);
   res.json({
@@ -1073,20 +1153,20 @@ app.get('/api/distress/active-debug', (req, res) => {
   });
 });
 
-app.post('/api/distress/:id/end', (req, res) => {
+app.post('/api/distress/:id/end', async (req, res) => {
   const { id } = req.params;
-  const db = readDb();
+  const db = await loadDistressDb();
   const s = db.distressSessions.find((x) => x.id === id);
   if (!s) return res.status(404).json({ error: 'Not found' });
   s.status = 'ended_by_citizen';
   s.endedAt = new Date().toISOString();
-  writeDb(db);
+  await saveDistressDb(db);
   res.json({ ok: true });
 });
 
-app.get('/api/distress/:id/status', (req, res) => {
+app.get('/api/distress/:id/status', async (req, res) => {
   const { id } = req.params;
-  const db = readDb();
+  const db = await loadDistressDb();
   const s = db.distressSessions.find((x) => x.id === id);
   if (!s) return res.status(404).json({ error: 'Not found' });
   res.json({
@@ -1098,10 +1178,10 @@ app.get('/api/distress/:id/status', (req, res) => {
   });
 });
 
-app.patch('/api/distress/:id', authMiddleware, (req, res) => {
+app.patch('/api/distress/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
   const { status, assignment } = req.body || {};
-  const db = readDb();
+  const db = await loadDistressDb();
   const s = db.distressSessions.find((x) => x.id === id);
   if (!s) return res.status(404).json({ error: 'Not found' });
 
@@ -1121,6 +1201,9 @@ app.patch('/api/distress/:id', authMiddleware, (req, res) => {
         assignedBy: req.officer ? req.officer.badge : 'dispatch',
         note: String(assignment.note || '')
       };
+      // Assigned incidents leave the unassigned live queue immediately.
+      s.status = 'assigned';
+      s.assignedAt = new Date().toISOString();
     }
   }
 
@@ -1134,7 +1217,7 @@ app.patch('/api/distress/:id', authMiddleware, (req, res) => {
       s.acknowledgedBy = req.officer.badge;
     }
   }
-  writeDb(db);
+  await saveDistressDb(db);
   res.json(s);
 });
 

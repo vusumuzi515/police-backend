@@ -18,7 +18,8 @@ export function DistressAudioPlayer({ audioUrl }: DistressAudioPlayerProps) {
       setError(false);
       try {
         const token = getAuthToken();
-        const res = await fetch(mediaUrl(audioUrl), {
+        const separator = audioUrl.includes('?') ? '&' : '?';
+        const res = await fetch(`${mediaUrl(audioUrl)}${separator}v=${encodeURIComponent(audioUrl)}`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         if (!res.ok) throw new Error('load failed');

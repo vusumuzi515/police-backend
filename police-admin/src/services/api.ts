@@ -277,7 +277,7 @@ export async function fetchActiveDistress(): Promise<DistressFetchResult> {
   const token = getAuthToken();
   if (!token) return { ok: false, reason: 'unauthorized' };
 
-  return cachedRequest(`active-distress:${token}`, 2_000, async () => {
+  return cachedRequest(`active-distress:${token}`, 1_000, async () => {
     const res = await fetch(`${API_BASE}/api/distress/active`, {
       headers: { Authorization: `Bearer ${token}` },
     });
