@@ -9,6 +9,21 @@ import {
 import { sortDistressSessions } from '../utils/distressSession';
 
 const POLL_MS = 3000;
+const LIVE_ALERT_WINDOW_MS = 5 * 60 * 1000;
+
+function isRecentUnresolvedAlert(session: {
+  startedAt: string;
+  status: string;
+  assignedOfficer?: unknown;
+}) {
+  const startedAt = new Date(session.startedAt).getTime();
+  return (
+    (session.status === 'active' || session.status === 'acknowledged') &&
+    !session.assignedOfficer &&
+    Number.isFinite(startedAt) &&
+    Date.now() - startedAt <= LIVE_ALERT_WINDOW_MS
+  );
+}
 
 function playNewAlertTone() {
   try {
@@ -71,7 +86,9 @@ export function useLiveMonitoring() {
           setFetchError('Could not load live feed');
         }
       } else {
-        const sorted = sortDistressSessions(distressResult.sessions);
+        const sorted = sortDistressSessions(
+          distressResult.sessions.filter(isRecentUnresolvedAlert),
+        );
         const newIds = sorted.filter((s) => !knownIdsRef.current.has(s.id)).map((s) => s.id);
         if (knownIdsRef.current.size > 0 && newIds.length > 0) {
           playNewAlertTone();

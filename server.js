@@ -446,8 +446,6 @@ function expireStaleDistressSessions(db) {
   let changed = false;
   for (const s of db.distressSessions) {
     if (!s || s.status !== 'active') continue;
-    // Keep live Get Help alerts on the map until an officer resolves them.
-    if (s.audioUrl) continue;
     const last = s.lastPingAt || s.startedAt;
     const lastMs = last ? new Date(last).getTime() : 0;
     const staleByPing = lastMs && now - lastMs > STALE_PING_MS;
@@ -462,12 +460,15 @@ function expireStaleDistressSessions(db) {
 }
 
 function listOpenDistressSessions(db) {
+  const cutoff = Date.now() - STALE_PING_MS;
   return db.distressSessions
     .filter(
       (x) =>
         x &&
         (x.status === 'active' || x.status === 'acknowledged') &&
-        !x.assignedOfficer,
+        !x.assignedOfficer &&
+        Number.isFinite(new Date(x.startedAt).getTime()) &&
+        new Date(x.startedAt).getTime() >= cutoff,
     )
     .sort((a, b) => {
       const pa = a.priority === 'high' ? 0 : 1;
@@ -942,6 +943,44 @@ app.patch('/api/reports/:id', authMiddleware, (req, res) => {
 
 app.get('/api/notices', (req, res) => {
   res.json(readDb().notices);
+});
+
+app.post('/api/notices', authMiddleware, (req, res) => {
+  const body = req.body || {};
+  const title = String(body.title || '').trim();
+  const message = String(body.message || '').trim();
+  if (!title) return res.status(400).json({ error: 'Notice title is required' });
+  if (!message && !body.attachmentUrl) {
+    return res.status(400).json({ error: 'Notice message or attachment is required' });
+  }
+
+  const now = new Date().toISOString();
+  const notice = {
+    id: 'NOTICE-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex').toUpperCase(),
+    title,
+    message,
+    type: body.type || body.category || 'national',
+    category: body.category || body.type || 'national',
+    scope: body.scope === 'regional' ? 'regional' : 'national',
+    region: body.region || undefined,
+    location: body.location || undefined,
+    urgency: body.urgency || (body.urgent ? 'emergency' : 'advisory'),
+    urgent: Boolean(body.urgent),
+    reference: body.reference || undefined,
+    acknowledgeable: Boolean(body.acknowledgeable),
+    attachmentUrl: body.attachmentUrl || undefined,
+    timestamp: now,
+    publishedAt: now,
+    expiresAt: body.expiresAt || undefined,
+    status: 'published',
+    createdBy: req.officer?.badge || 'communications',
+  };
+
+  const db = readDb();
+  if (!Array.isArray(db.notices)) db.notices = [];
+  db.notices = [notice, ...db.notices];
+  writeDb(db);
+  res.status(201).json(notice);
 });
 
 // ----- Citizen mobile: Get Help (panic button with audio) -----
