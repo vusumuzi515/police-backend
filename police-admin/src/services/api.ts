@@ -439,9 +439,9 @@ export async function publishNoticeToApi(notice: {
   reference?: string;
   acknowledgeable?: boolean;
   attachmentUrl?: string;
-}): Promise<boolean> {
+}): Promise<{ ok: true } | { ok: false; error: string }> {
   const token = getAuthToken();
-  if (!token) return false;
+  if (!token) return { ok: false, error: 'Sign in again before publishing.' };
 
   try {
     const res = await fetch(`${API_BASE}/api/notices`, {
@@ -463,11 +463,17 @@ export async function publishNoticeToApi(notice: {
         attachmentUrl: notice.attachmentUrl || undefined,
       }),
     });
-    if (!res.ok) return false;
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      return { ok: false, error: body.error || `Police server rejected the notice (${res.status}).` };
+    }
     clearApiCache();
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'Could not reach the police server.',
+    };
   }
 }
 
