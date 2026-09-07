@@ -179,6 +179,7 @@ export interface CitizenReport {
   closedAt?: string;
   phone?: string;
   location?: string;
+  numberPlate?: string;
   anonymous: boolean;
   evidenceFiles?: EvidenceFile[];
 }
@@ -217,6 +218,7 @@ interface ServerReport {
     reportTitle?: string;
     phone?: string;
     location?: string | Record<string, unknown>;
+    numberPlate?: string;
     anonymous?: string | boolean;
     evidenceFiles?: EvidenceFile[];
   };
@@ -268,6 +270,7 @@ export function normalizeReport(raw: ServerReport): CitizenReport {
     closedAt: typeof raw.closedAt === 'string' ? raw.closedAt : undefined,
     phone: anon ? undefined : (typeof p.phone === 'string' ? p.phone : undefined),
     location: anon ? undefined : normalizeReportLocation(p.location),
+    numberPlate: typeof p.numberPlate === 'string' ? p.numberPlate : undefined,
     anonymous: anon,
     evidenceFiles: Array.isArray(p.evidenceFiles) ? p.evidenceFiles : undefined,
   };

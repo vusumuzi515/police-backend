@@ -159,6 +159,9 @@ function ReportDetailView({
         <div className="report-detail-card">
           <h4 className="detail-section-title">Report</h4>
           <p className="detail-message">{report.message || '—'}</p>
+          {report.numberPlate ? (
+            <p className="detail-message"><strong>Number plate:</strong> {report.numberPlate}</p>
+          ) : null}
         </div>
 
         {!report.anonymous && (report.phone || report.location) ? (
