@@ -184,22 +184,22 @@ async function deleteDistressSessionFromSupabase(id) {
 async function loadDistressDb() {
   const db = readDb();
   const sessions = await fetchDistressSessionsFromSupabase();
-  if (USE_SUPABASE && !sessions) {
-    throw new Error('Supabase distress_sessions is unavailable');
-  }
   if (sessions) db.distressSessions = sessions;
   return db;
 }
 
 async function saveDistressDb(db) {
+  let savedToSupabase = !USE_SUPABASE;
   if (USE_SUPABASE) {
+    savedToSupabase = true;
     for (const session of db.distressSessions || []) {
       const saved = await saveDistressSessionToSupabase(session);
-      if (!saved) throw new Error('Could not save distress session to Supabase');
+      if (!saved) savedToSupabase = false;
     }
-    return;
   }
+  // Keep a local fallback so an alert is not lost when Supabase is unavailable.
   writeDb(db);
+  return savedToSupabase;
 }
 
 // ============= SUPABASE HELPERS (for reports and evidence) =============
@@ -255,13 +255,17 @@ async function createReportInSupabase(report) {
 async function uploadEvidenceToSupabase(bucket, fileName, fileBuffer, mimeType) {
   if (!USE_SUPABASE) return null;
   try {
-    const { data, error } = await supabase
-      .storage
-      .from(bucket)
-      .upload(fileName, fileBuffer, {
+    const options = {
         contentType: mimeType,
         upsert: false
-      });
+    };
+    let { data, error } = await supabase.storage.from(bucket).upload(fileName, fileBuffer, options);
+    if (error && /bucket|not found|does not exist/i.test(error.message || '')) {
+      const created = await supabase.storage.createBucket(bucket, { public: true });
+      if (!created.error || /already exists/i.test(created.error.message || '')) {
+        ({ data, error } = await supabase.storage.from(bucket).upload(fileName, fileBuffer, options));
+      }
+    }
     if (error) {
       console.error('Supabase upload error:', error);
       return null;
@@ -280,25 +284,33 @@ function getSupabaseStorageUrl(bucket, path) {
 }
 
 async function persistPanicAudio(sessionId, filename) {
-  if (!USE_SUPABASE || !filename) return;
+  if (!filename) return false;
+  const localPath = path.join(UPLOADS_DIR, filename);
+  if (!fs.existsSync(localPath)) return false;
+
+  let uploadedPath = null;
   try {
-    const localPath = path.join(UPLOADS_DIR, filename);
-    if (!fs.existsSync(localPath)) return;
-    const uploadedPath = await uploadEvidenceToSupabase(
-      'evidence',
-      `panic/${sessionId}/${filename}`,
-      fs.readFileSync(localPath),
-      filename.endsWith('.wav') ? 'audio/wav' : 'audio/mp4',
-    );
-    if (!uploadedPath) return;
+    if (USE_SUPABASE) {
+      uploadedPath = await uploadEvidenceToSupabase(
+        'evidence',
+        `panic/${sessionId}/${filename}`,
+        fs.readFileSync(localPath),
+        filename.endsWith('.wav') ? 'audio/wav' : 'audio/mp4',
+      );
+    }
     const db = await loadDistressDb();
     const session = db.distressSessions.find((item) => item.id === sessionId);
-    if (!session) return;
-    session.audioUrl = getSupabaseStorageUrl('evidence', uploadedPath) || session.audioUrl;
-    session.audioStoragePath = uploadedPath;
+    if (!session) return false;
+    session.audioUrl = uploadedPath
+      ? getSupabaseStorageUrl('evidence', uploadedPath)
+      : `/uploads/${filename}`;
+    session.audioStoragePath = uploadedPath || null;
+    session.audioStorage = uploadedPath ? 'supabase' : 'local-fallback';
     await saveDistressDb(db);
+    return Boolean(uploadedPath);
   } catch (err) {
     console.error('Could not persist Get Help audio to Supabase Storage:', err);
+    return false;
   }
 }
 
@@ -1072,10 +1084,15 @@ async function applyPanicToSession(db, body, audioFilename) {
 }
 
 app.post('/api/citizen/emergency/panic', uploadAudio.single('audio'), async (req, res) => {
-  const db = await loadDistressDb();
-  const result = await applyPanicToSession(db, req.body || {}, req.file ? req.file.filename : null);
-  if (req.file) await persistPanicAudio(result.payload.sessionId, req.file.filename);
-  res.status(result.status).json(result.payload);
+  try {
+    const db = await loadDistressDb();
+    const result = await applyPanicToSession(db, req.body || {}, req.file ? req.file.filename : null);
+    if (req.file) await persistPanicAudio(result.payload.sessionId, req.file.filename);
+    res.status(result.status).json(result.payload);
+  } catch (err) {
+    console.error('panic multipart failed', err);
+    res.status(500).json({ error: 'Could not save Get Help audio' });
+  }
 });
 
 /** JSON + base64 audio — reliable fallback when multipart upload fails on some phone networks. */
