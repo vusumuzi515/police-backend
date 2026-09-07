@@ -98,6 +98,13 @@ a { color: inherit; text-decoration: none; }
   backdrop-filter: blur(1px);
 }
 
+.evidence-file-link {
+  color: #2b78c5;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 700;
+}
+
 .dashboard-badge-bg .panel-header,
 .dashboard-badge-bg .table-wrap,
 .dashboard-badge-bg .panel-body {

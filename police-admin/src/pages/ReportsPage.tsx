@@ -208,7 +208,9 @@ function ReportDetailView({
                     ) : video ? (
                       <video src={url} controls className="evidence-thumb" />
                     ) : (
-                      <a href={url} target="_blank" rel="noreferrer" className="evidence-file-link">File</a>
+                      <a href={url} target="_blank" rel="noreferrer" className="evidence-file-link">
+                        {f.name || 'Evidence'}
+                      </a>
                     )}
                   </div>
                 );
