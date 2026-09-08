@@ -222,11 +222,30 @@ async function fetchReportsFromSupabase() {
       console.error('Supabase fetch reports error:', result.error);
       return null;
     }
-    return result.data || [];
+    return sortDispatchQueue(result.data || []);
   } catch (err) {
     console.error('Supabase fetch reports exception:', err);
     return null;
   }
+}
+
+const DISPATCH_PRIORITY = Object.freeze({
+  GET_HELP: 0,
+  REPORT: 100,
+});
+
+function dispatchPriorityOf(item) {
+  const value = item?.dispatchPriority ?? item?.payload?.dispatchPriority;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : DISPATCH_PRIORITY.REPORT;
+}
+
+function sortDispatchQueue(items) {
+  return [...items].sort((a, b) => {
+    const priorityDifference = dispatchPriorityOf(a) - dispatchPriorityOf(b);
+    if (priorityDifference !== 0) return priorityDifference;
+    return new Date(b.timestamp || b.startedAt || 0).getTime() - new Date(a.timestamp || a.startedAt || 0).getTime();
+  });
 }
 
 async function createReportInSupabase(report) {
@@ -857,8 +876,13 @@ async function createCitizenReport(body, files) {
     id,
     type: payload.type || 'unknown',
     status: 'new',
+    dispatchPriority: DISPATCH_PRIORITY.REPORT,
     timestamp: new Date().toISOString(),
-    payload: payload
+    payload: {
+      ...payload,
+      dispatchPriority: DISPATCH_PRIORITY.REPORT,
+      queueClass: 'report',
+    }
   };
   
   // Save to Supabase if available
@@ -901,7 +925,7 @@ app.get('/api/reports', authMiddleware, async (req, res) => {
       reports = db.reports;
     }
     
-    res.json(reports);
+    res.json(sortDispatchQueue(reports));
   } catch (err) {
     console.error('Error fetching reports:', err);
     // Fall back to local JSON on error
@@ -1020,6 +1044,7 @@ async function applyPanicToSession(db, body, audioFilename) {
       if (audioFilename) s.audioUrl = '/uploads/' + audioFilename;
       s.source = body.source || s.source || 'panic_button';
       s.priority = normalizeDistressPriority(body.priority || s.priority, s.source);
+      s.dispatchPriority = DISPATCH_PRIORITY.GET_HELP;
       if (isFacataAlert(body, s.source)) {
         s.alertType = 'facata';
         s.callAnswered = true;
@@ -1047,6 +1072,7 @@ async function applyPanicToSession(db, body, audioFilename) {
   const session = {
     id,
     priority: normalizeDistressPriority(body.priority, source),
+    dispatchPriority: DISPATCH_PRIORITY.GET_HELP,
     source: facata ? 'facata_call' : source,
     alertType: facata ? 'facata' : null,
     callAnswered: facata ? true : false,

@@ -9,4 +9,8 @@ create table if not exists public.distress_sessions (
 create index if not exists distress_sessions_status_started_idx
   on public.distress_sessions (status, started_at desc);
 
+-- Keep Get Help ahead of ordinary reports in the operational queue.
+create index if not exists distress_sessions_dispatch_priority_idx
+  on public.distress_sessions ((coalesce((payload->>'dispatchPriority')::integer, 100)), started_at desc);
+
 alter table public.distress_sessions enable row level security;
