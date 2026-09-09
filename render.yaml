@@ -4,11 +4,11 @@ services:
   - type: web
     name: police-biso
     runtime: node
-    plan: free
+    plan: starter
     branch: master
     buildCommand: npm install
     startCommand: node server.js
-    healthCheckPath: /
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production

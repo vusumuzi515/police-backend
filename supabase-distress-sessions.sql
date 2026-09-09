@@ -6,6 +6,10 @@ create table if not exists public.distress_sessions (
   payload jsonb not null default '{}'::jsonb
 );
 
+-- Apply this separately when the table already existed before updated_at was added.
+alter table public.distress_sessions
+  add column if not exists updated_at timestamptz not null default now();
+
 create index if not exists distress_sessions_status_started_idx
   on public.distress_sessions (status, started_at desc);
 

@@ -30,8 +30,8 @@ const USE_SUPABASE = supabase !== null;
 
 // Debug: Log Supabase configuration on startup
 console.log('=== SUPABASE CONFIGURATION ===');
-console.log('SUPABASE_URL:', SUPABASE_URL ? 'SET (' + SUPABASE_URL.substring(0, 30) + '...)' : 'NOT SET');
-console.log('SUPABASE_SERVICE_KEY:', SUPABASE_SERVICE_KEY ? 'SET (' + SUPABASE_SERVICE_KEY.substring(0, 20) + '...)' : 'NOT SET');
+console.log('SUPABASE_URL:', SUPABASE_URL ? 'SET' : 'NOT SET');
+console.log('SUPABASE_SERVICE_KEY:', SUPABASE_SERVICE_KEY ? 'SET' : 'NOT SET');
 console.log('USE_SUPABASE (client initialized):', USE_SUPABASE);
 console.log('==============================');
 
@@ -134,7 +134,6 @@ function distressRow(session) {
     id: session.id,
     status: session.status,
     started_at: session.startedAt || new Date().toISOString(),
-    updated_at: new Date().toISOString(),
     payload: session,
   };
 }
@@ -152,7 +151,7 @@ async function fetchDistressSessionsFromSupabase() {
   if (!USE_SUPABASE) return null;
   const { data, error } = await supabase
     .from(DISTRESS_TABLE)
-    .select('id,status,started_at,updated_at,payload')
+    .select('id,status,started_at,payload')
     .order('started_at', { ascending: false });
   if (error) {
     console.error('Supabase fetch distress sessions error:', error);
@@ -977,8 +976,40 @@ app.patch('/api/reports/:id', authMiddleware, (req, res) => {
   res.json(r);
 });
 
+app.get('/health', (_req, res) => {
+  res.status(200).json({ ok: true, service: 'police-api', uptimeSeconds: Math.floor(process.uptime()) });
+});
+
 app.get('/api/notices', (req, res) => {
   res.json(readDb().notices);
+});
+
+app.post('/api/notices/upload', authMiddleware, uploadEvidence.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const isImage = ['image/jpeg', 'image/png', 'image/webp'].includes(req.file.mimetype);
+    if (!isImage) {
+      fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename));
+      return res.status(400).json({ error: 'Only JPG, PNG, or WEBP images are allowed' });
+    }
+
+    const fileBuffer = fs.readFileSync(path.join(UPLOADS_DIR, req.file.filename));
+    const storagePath = await uploadEvidenceToSupabase(
+      'evidence',
+      `notices/${req.file.filename}`,
+      fileBuffer,
+      req.file.mimetype,
+    );
+    res.status(201).json({
+      url: storagePath
+        ? getSupabaseStorageUrl('evidence', storagePath)
+        : `/uploads/${req.file.filename}`,
+      mimeType: req.file.mimetype,
+    });
+  } catch (err) {
+    console.error('Notice attachment upload failed:', err);
+    res.status(500).json({ error: 'Could not upload notice attachment' });
+  }
 });
 
 app.post('/api/notices', authMiddleware, (req, res) => {
@@ -1375,7 +1406,7 @@ ensureDb();
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('API: http://localhost:' + PORT + '/');
   console.log('Citizen app: run Expo in citizen-mobile/ (points EXPO_PUBLIC_API_URL at this API)');
-  console.log('Admin dashboard (dev): http://localhost:5174 — username MELU101 / Melu123!');
+  console.log('Admin dashboard (dev): http://localhost:5174');
   if (fs.existsSync(commsAdminDir)) {
     console.log('Admin (built): http://localhost:' + PORT + '/communications/');
   } else {
