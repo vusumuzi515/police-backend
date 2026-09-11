@@ -19,6 +19,7 @@ const DB_PATH = path.join(DATA_DIR, 'prototype-db.json');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'police-uploads';
 const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
       auth: { autoRefreshToken: false, persistSession: false },
@@ -145,6 +146,40 @@ async function hydrateDbFromSupabase() {
     throw new Error(`Supabase state seed failed: ${seedError.message}`);
   }
   console.log('Supabase connected: seeded police application state.');
+}
+
+async function ensureSupabaseStorage() {
+  if (!supabase) return;
+  const { error } = await supabase.storage.createBucket(SUPABASE_STORAGE_BUCKET, {
+    public: true,
+    fileSizeLimit: '80MB',
+  });
+  if (error && !/already exists/i.test(error.message)) {
+    throw new Error(`Supabase Storage setup failed: ${error.message}`);
+  }
+}
+
+async function storeUpload(filePath, storagePath, contentType) {
+  if (!supabase) {
+    return { url: '/uploads/' + path.basename(filePath), storagePath: null };
+  }
+
+  const buffer = await fs.promises.readFile(filePath);
+  const { error } = await supabase.storage
+    .from(SUPABASE_STORAGE_BUCKET)
+    .upload(storagePath, buffer, { contentType, upsert: false });
+  if (error) throw new Error(`Supabase Storage upload failed: ${error.message}`);
+
+  const { data } = supabase.storage
+    .from(SUPABASE_STORAGE_BUCKET)
+    .getPublicUrl(storagePath);
+  return { url: data.publicUrl, storagePath };
+}
+
+async function storeMulterFile(file, folder) {
+  const storagePath = `${folder}/${file.filename}`;
+  const stored = await storeUpload(file.path, storagePath, file.mimetype || 'application/octet-stream');
+  return { ...file, storagePath: stored.storagePath, storageUrl: stored.url };
 }
 
 function queueSupabaseWrite(db) {
@@ -590,13 +625,19 @@ app.post('/api/citizen/logout', citizenAuthMiddleware, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/reports', uploadEvidence.array('evidence', 10), (req, res) => {
-  const files = Array.isArray(req.files) ? req.files : [];
-  const result = createCitizenReport(req.body || {}, files);
-  res.status(201).json(result);
+app.post('/api/reports', uploadEvidence.array('evidence', 10), async (req, res) => {
+  try {
+    const files = Array.isArray(req.files) ? req.files : [];
+    const storedFiles = await Promise.all(files.map((file) => storeMulterFile(file, 'reports')));
+    const result = createCitizenReport(req.body || {}, storedFiles);
+    res.status(201).json(result);
+  } catch (err) {
+    console.error('reports upload failed', err);
+    res.status(500).json({ error: 'Could not store report evidence' });
+  }
 });
 
-app.post('/api/reports/json', express.json({ limit: '25mb' }), (req, res) => {
+app.post('/api/reports/json', express.json({ limit: '25mb' }), async (req, res) => {
   try {
     const body = req.body || {};
     const files = [];
@@ -614,11 +655,14 @@ app.post('/api/reports/json', express.json({ limit: '25mb' }), (req, res) => {
         const filename =
           Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '-evidence.' + ext;
         fs.writeFileSync(path.join(UPLOADS_DIR, filename), buffer);
+        const stored = await storeUpload(path.join(UPLOADS_DIR, filename), `reports/${filename}`, mime);
         files.push({
           originalname: body.evidenceName || filename,
           filename,
           size: buffer.length,
           mimetype: mime,
+          storagePath: stored.storagePath,
+          storageUrl: stored.url,
         });
       }
     }
@@ -630,21 +674,22 @@ app.post('/api/reports/json', express.json({ limit: '25mb' }), (req, res) => {
   }
 });
 
-app.post('/api/reports/:id/evidence', uploadEvidence.single('evidence'), (req, res) => {
+app.post('/api/reports/:id/evidence', uploadEvidence.single('evidence'), async (req, res) => {
   const { id } = req.params;
   const db = readDb();
   const report = db.reports.find((x) => x.id === id);
   if (!report) return res.status(404).json({ error: 'Report not found' });
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const stored = await storeMulterFile(req.file, 'reports');
 
   if (!report.payload) report.payload = {};
   if (!Array.isArray(report.payload.evidenceFiles)) report.payload.evidenceFiles = [];
   report.payload.evidenceFiles.push({
     name: req.file.originalname || req.file.filename,
-    storedName: req.file.filename,
+    storedName: stored.storagePath || req.file.filename,
     size: req.file.size || 0,
     type: req.file.mimetype || 'application/octet-stream',
-    url: '/uploads/' + req.file.filename,
+    url: stored.storageUrl,
   });
   writeDb(db);
   res.json({ ok: true, id });
@@ -669,10 +714,10 @@ function createCitizenReport(body, files) {
   if (files.length) {
     payload.evidenceFiles = files.map((f) => ({
       name: f.originalname || f.filename,
-      storedName: f.filename,
+      storedName: f.storagePath || f.filename,
       size: f.size || 0,
       type: f.mimetype || 'application/octet-stream',
-      url: '/uploads/' + f.filename
+      url: f.storageUrl || '/uploads/' + f.filename
     }));
   } else if (typeof payload.evidenceFiles === 'string') {
     payload.evidenceFiles = parseJsonField(payload.evidenceFiles, []);
@@ -743,7 +788,7 @@ app.get('/api/notices', (req, res) => {
 });
 
 // ----- Citizen mobile: Get Help (panic button with audio) -----
-function applyPanicToSession(db, body, audioFilename) {
+function applyPanicToSession(db, body, audioUrl) {
   const lat = parseFloat(body.latitude);
   const lng = parseFloat(body.longitude);
   const existingId = body.sessionId;
@@ -764,7 +809,7 @@ function applyPanicToSession(db, body, audioFilename) {
         });
         if (s.path.length > 500) s.path = s.path.slice(-500);
       }
-      if (audioFilename) s.audioUrl = '/uploads/' + audioFilename;
+      if (audioUrl) s.audioUrl = audioUrl;
       s.source = body.source || s.source || 'panic_button';
       s.priority = normalizeDistressPriority(body.priority || s.priority, s.source);
       if (isFacataAlert(body, s.source)) {
@@ -805,7 +850,7 @@ function applyPanicToSession(db, body, audioFilename) {
     lastLat: Number.isFinite(lat) ? lat : null,
     lastLng: Number.isFinite(lng) ? lng : null,
     lastAccuracy: body.accuracyMeters != null ? parseFloat(body.accuracyMeters) : null,
-    audioUrl: audioFilename ? '/uploads/' + audioFilename : null,
+    audioUrl: audioUrl || null,
     path: []
   };
   if (Number.isFinite(lat) && Number.isFinite(lng)) {
@@ -830,14 +875,20 @@ function applyPanicToSession(db, body, audioFilename) {
   };
 }
 
-app.post('/api/citizen/emergency/panic', uploadAudio.single('audio'), (req, res) => {
-  const db = readDb();
-  const result = applyPanicToSession(db, req.body || {}, req.file ? req.file.filename : null);
-  res.status(result.status).json(result.payload);
+app.post('/api/citizen/emergency/panic', uploadAudio.single('audio'), async (req, res) => {
+  try {
+    const stored = req.file ? await storeMulterFile(req.file, 'panic') : null;
+    const db = readDb();
+    const result = applyPanicToSession(db, req.body || {}, stored?.storageUrl || null);
+    res.status(result.status).json(result.payload);
+  } catch (err) {
+    console.error('panic upload failed', err);
+    res.status(500).json({ error: 'Could not store Get Help audio' });
+  }
 });
 
 /** JSON + base64 audio — reliable fallback when multipart upload fails on some phone networks. */
-app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), (req, res) => {
+app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), async (req, res) => {
   try {
     const body = req.body || {};
     const audioBase64 = body.audioBase64;
@@ -859,8 +910,9 @@ app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), (
       Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '-panic.' + ext;
     fs.writeFileSync(path.join(UPLOADS_DIR, filename), buffer);
 
+    const stored = await storeUpload(path.join(UPLOADS_DIR, filename), `panic/${filename}`, body.mimeType || 'audio/mp4');
     const db = readDb();
-    const result = applyPanicToSession(db, body, filename);
+    const result = applyPanicToSession(db, body, stored.url);
     res.status(result.status).json(result.payload);
   } catch (err) {
     console.error('panic-json failed', err);
@@ -1085,6 +1137,7 @@ app.get('/', (req, res) => {
 async function startServer() {
   ensureDb();
   await hydrateDbFromSupabase();
+  await ensureSupabaseStorage();
 
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('API: http://localhost:' + PORT + '/');
