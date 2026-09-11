@@ -11,11 +11,24 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
+const { createClient } = require('@supabase/supabase-js');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'prototype-db.json');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+  : null;
+let supabaseWriteChain = Promise.resolve();
+
+if (process.env.NODE_ENV === 'production' && !supabase) {
+  throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production.');
+}
 
 const app = express();
 app.use(cors());
@@ -95,6 +108,62 @@ function ensureDb() {
   }
 }
 
+function snapshotDb(db) {
+  return JSON.parse(JSON.stringify(db));
+}
+
+async function hydrateDbFromSupabase() {
+  if (!supabase) {
+    console.warn('Supabase is not configured; using local JSON storage.');
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from('police_app_state')
+    .select('state')
+    .eq('id', 'singleton')
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Supabase state read failed: ${error.message}`);
+  }
+
+  if (data?.state && typeof data.state === 'object') {
+    const hydrated = snapshotDb(data.state);
+    fs.writeFileSync(DB_PATH, JSON.stringify(hydrated, null, 2), 'utf8');
+    console.log('Supabase connected: loaded police application state.');
+    return;
+  }
+
+  const localState = readDb();
+  const { error: seedError } = await supabase.from('police_app_state').upsert({
+    id: 'singleton',
+    state: localState,
+    updated_at: new Date().toISOString(),
+  });
+  if (seedError) {
+    throw new Error(`Supabase state seed failed: ${seedError.message}`);
+  }
+  console.log('Supabase connected: seeded police application state.');
+}
+
+function queueSupabaseWrite(db) {
+  if (!supabase) return;
+  const state = snapshotDb(db);
+  supabaseWriteChain = supabaseWriteChain
+    .then(async () => {
+      const { error } = await supabase.from('police_app_state').upsert({
+        id: 'singleton',
+        state,
+        updated_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+    })
+    .catch((error) => {
+      console.error('Supabase state write failed:', error.message || error);
+    });
+}
+
 function readDb() {
   ensureDb();
   const db = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
@@ -107,6 +176,7 @@ function readDb() {
 function writeDb(db) {
   db.settings = normalizeSettings(db.settings);
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
+  queueSupabaseWrite(db);
 }
 
 const DEFAULT_SETTINGS = {
@@ -1012,38 +1082,47 @@ app.get('/', (req, res) => {
   );
 });
 
-ensureDb();
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log('API: http://localhost:' + PORT + '/');
-  console.log('Citizen app: run Expo in citizen-mobile/ (points EXPO_PUBLIC_API_URL at this API)');
-  console.log('Admin dashboard (dev): http://localhost:5174 — username MELU101 / Melu123!');
-  if (fs.existsSync(commsAdminDir)) {
-    console.log('Admin (built): http://localhost:' + PORT + '/communications/');
-  } else {
-    console.log('Admin (built): run "npm run admin:build" then restart — or "npm run admin:dev"');
-  }
+async function startServer() {
+  ensureDb();
+  await hydrateDbFromSupabase();
 
-  // Auto-remove expired reports / closed live alerts on a schedule.
-  try {
-    purgeExpiredRecords(readDb());
-  } catch (err) {
-    console.error('Initial retention purge failed', err);
-  }
-  setInterval(() => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log('API: http://localhost:' + PORT + '/');
+    console.log('Citizen app: run Expo in citizen-mobile/ (points EXPO_PUBLIC_API_URL at this API)');
+    console.log('Admin dashboard (dev): http://localhost:5174 — username MELU101 / Melu123!');
+    if (fs.existsSync(commsAdminDir)) {
+      console.log('Admin (built): http://localhost:' + PORT + '/communications/');
+    } else {
+      console.log('Admin (built): run "npm run admin:build" then restart — or "npm run admin:dev"');
+    }
+
+    // Auto-remove expired reports / closed live alerts on a schedule.
     try {
       purgeExpiredRecords(readDb());
     } catch (err) {
-      console.error('Retention purge failed', err);
+      console.error('Initial retention purge failed', err);
     }
-  }, 60 * 60 * 1000);
-});
+    setInterval(() => {
+      try {
+        purgeExpiredRecords(readDb());
+      } catch (err) {
+        console.error('Retention purge failed', err);
+      }
+    }, 60 * 60 * 1000);
+  });
 
-server.on('error', (err) => {
-  if (err && err.code === 'EADDRINUSE') {
-    console.error('Port ' + PORT + ' is already in use.');
-    console.error('Close the other server process or run with a different port (e.g. set PORT=3001).');
-    process.exit(1);
-    return;
-  }
-  throw err;
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error('Port ' + PORT + ' is already in use.');
+      console.error('Close the other server process or run with a different port (e.g. set PORT=3001).');
+      process.exit(1);
+      return;
+    }
+    throw err;
+  });
+}
+
+startServer().catch((err) => {
+  console.error('Backend startup failed:', err.message || err);
+  process.exit(1);
 });

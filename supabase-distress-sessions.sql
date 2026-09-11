@@ -18,3 +18,13 @@ create index if not exists distress_sessions_dispatch_priority_idx
   on public.distress_sessions ((coalesce((payload->>'dispatchPriority')::integer, 100)), started_at desc);
 
 alter table public.distress_sessions enable row level security;
+
+-- Durable compatibility store for the current API model. The service role is
+-- used only by Render; clients never receive access to this table.
+create table if not exists public.police_app_state (
+  id text primary key,
+  state jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.police_app_state enable row level security;

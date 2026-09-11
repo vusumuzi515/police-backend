@@ -9,7 +9,7 @@ Host this on Render: `server.js` at the repo root, start with `node server.js`.
 |------|------------|
 | `server.js` | **API to host** (this is the backend) |
 | `package.json` | `npm start` → `node server.js` |
-| `data/` | JSON database |
+| `data/` | Local cache / development fallback; production state is stored in Supabase |
 | `uploads/` | Photos / audio |
 | `citizen-mobile/` | Phone app — do **not** set this as Render root |
 | `police-admin/` | Dashboard — run locally or build separately |
@@ -43,6 +43,21 @@ git push origin master
 Paste that URL into `citizen-mobile/.env` and `eas.json` as `EXPO_PUBLIC_API_URL`, then rebuild the APK.
 
 Free Render apps sleep after idle; the first request can take ~1 minute.
+
+## Connect Supabase
+
+Run `supabase-distress-sessions.sql` in the Supabase SQL Editor before deploying. It creates the durable `police_app_state` table used by the API and enables row-level security.
+
+In the Render service environment, set these secret variables:
+
+```text
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
+```
+
+The API loads its state from Supabase before accepting requests and writes changes back to Supabase. In production it will refuse to start if either variable is missing or if the state table cannot be read.
+
+Never put `SUPABASE_SERVICE_ROLE_KEY` in the citizen app or the Netlify dashboard.
 
 ## Run locally
 
