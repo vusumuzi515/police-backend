@@ -3,9 +3,10 @@ import { getAuthToken, mediaUrl } from '../services/api';
 
 interface DistressAudioPlayerProps {
   audioUrl: string;
+  label?: string;
 }
 
-export function DistressAudioPlayer({ audioUrl }: DistressAudioPlayerProps) {
+export function DistressAudioPlayer({ audioUrl, label = 'Recording' }: DistressAudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState(false);
@@ -55,8 +56,11 @@ export function DistressAudioPlayer({ audioUrl }: DistressAudioPlayerProps) {
   }
 
   return (
+    <div>
+      <span className="map-incident-audio-label">{label}</span>
     <audio ref={audioRef} className="distress-audio" controls preload="metadata" src={src}>
       <a href={mediaUrl(audioUrl)} target="_blank" rel="noreferrer">Open recording</a>
     </audio>
+    </div>
   );
 }

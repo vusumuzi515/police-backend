@@ -84,6 +84,7 @@ export interface DistressSession {
   lastLng: number | null;
   lastAccuracy?: number | null;
   audioUrl?: string | null;
+  audioUrls?: string[];
   path?: { lat: number; lng: number; ts?: string }[];
   assignedOfficer?: {
     name: string;

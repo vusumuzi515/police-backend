@@ -209,9 +209,13 @@ export function MonitoringPage() {
                   Open directions
                 </a>
               ) : null}
-              {selected.audioUrl ? (
-                <DistressAudioPlayer audioUrl={selected.audioUrl} />
-              ) : null}
+              {(selected.audioUrls?.length ? selected.audioUrls : selected.audioUrl ? [selected.audioUrl] : []).map((audioUrl, index) => (
+                <DistressAudioPlayer
+                  key={audioUrl}
+                  audioUrl={audioUrl}
+                  label={`Recording ${index + 1}`}
+                />
+              ))}
               <div className="map-incident-actions">
                 <button
                   type="button"

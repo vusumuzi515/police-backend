@@ -833,6 +833,8 @@ function applyPanicToSession(db, body, audioUrl) {
         });
         if (s.path.length > 500) s.path = s.path.slice(-500);
       }
+      if (!Array.isArray(s.audioUrls)) s.audioUrls = s.audioUrl ? [s.audioUrl] : [];
+      if (audioUrl && !s.audioUrls.includes(audioUrl)) s.audioUrls.push(audioUrl);
       if (audioUrl) s.audioUrl = audioUrl;
       s.source = body.source || s.source || 'panic_button';
       s.priority = normalizeDistressPriority(body.priority || s.priority, s.source);
@@ -875,6 +877,7 @@ function applyPanicToSession(db, body, audioUrl) {
     lastLng: Number.isFinite(lng) ? lng : null,
     lastAccuracy: body.accuracyMeters != null ? parseFloat(body.accuracyMeters) : null,
     audioUrl: audioUrl || null,
+    audioUrls: audioUrl ? [audioUrl] : [],
     path: []
   };
   if (Number.isFinite(lat) && Number.isFinite(lng)) {
