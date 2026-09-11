@@ -119,6 +119,20 @@ async function hydrateDbFromSupabase() {
     return;
   }
 
+  async function refreshDbFromSupabase() {
+    if (!supabase) return;
+    await supabaseWriteChain;
+    const { data, error } = await supabase
+      .from('police_app_state')
+      .select('state')
+      .eq('id', 'singleton')
+      .maybeSingle();
+    if (error) throw new Error(`Supabase state refresh failed: ${error.message}`);
+    if (data?.state && typeof data.state === 'object') {
+      fs.writeFileSync(DB_PATH, JSON.stringify(snapshotDb(data.state), null, 2), 'utf8');
+    }
+  }
+
   const { data, error } = await supabase
     .from('police_app_state')
     .select('state')
@@ -213,6 +227,16 @@ function writeDb(db) {
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
   queueSupabaseWrite(db);
 }
+
+app.use('/api', async (_req, res, next) => {
+  try {
+    await refreshDbFromSupabase();
+    next();
+  } catch (error) {
+    console.error('Supabase request refresh failed:', error.message || error);
+    res.status(503).json({ error: 'Police data is temporarily unavailable' });
+  }
+});
 
 const DEFAULT_SETTINGS = {
   /** Days to keep citizen reports on the dashboard. 0 = keep forever. */
