@@ -69,7 +69,13 @@ export function MonitoringPage() {
       } else if (action === 'resolve') {
         ok = await updateDistressSession(selected.id, { status: 'resolved' });
       }
-      if (ok) await refresh();
+      if (ok) {
+        if (action === 'resolve') {
+          setSelectedId(null);
+          autoFocusedRef.current = false;
+        }
+        await refresh();
+      }
     } finally {
       setActionBusy(false);
     }
