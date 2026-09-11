@@ -1,75 +1,11 @@
 export const API_BASE =
   import.meta.env.VITE_API_URL?.replace(/\/$/, '') || 'http://localhost:3000';
 
-const API_CACHE_PREFIX = 'police-admin-api-cache:';
-const apiCache = new Map<string, { value: unknown; expiresAt: number }>();
-const apiRequests = new Map<string, Promise<unknown>>();
-
-function readCached<T>(key: string): { value: T; expiresAt: number } | null {
-  const memory = apiCache.get(key);
-  if (memory) return memory as { value: T; expiresAt: number };
-  try {
-    const storageKey = `${API_CACHE_PREFIX}${key}`;
-    const raw = localStorage.getItem(storageKey) ?? sessionStorage.getItem(storageKey);
-    if (!raw) return null;
-    const cached = JSON.parse(raw) as { value: T; expiresAt: number };
-    if (!Number.isFinite(cached.expiresAt)) return null;
-    apiCache.set(key, cached);
-    return cached;
-  } catch {
-    return null;
-  }
-}
-
-function writeCached<T>(key: string, value: T, ttlMs: number) {
-  const cached = { value, expiresAt: Date.now() + ttlMs };
-  apiCache.set(key, cached);
-  try {
-    localStorage.setItem(`${API_CACHE_PREFIX}${key}`, JSON.stringify(cached));
-  } catch {
-    /* memory cache remains available when storage is unavailable */
-  }
-}
-
-async function cachedRequest<T>(
-  key: string,
-  ttlMs: number,
-  request: () => Promise<T>,
-  fallback: T,
-  forceRefresh = false,
-): Promise<T> {
-  const cached = readCached<T>(key);
-  if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cached.value;
-  const pending = apiRequests.get(key);
-  if (pending) return pending as Promise<T>;
-
-  const requestPromise = request()
-    .then((value) => {
-      writeCached(key, value, ttlMs);
-      return value;
-    })
-    .catch(() => cached?.value ?? fallback)
-    .finally(() => apiRequests.delete(key));
-  apiRequests.set(key, requestPromise);
-  return requestPromise;
-}
-
-export function clearApiCache() {
-  apiCache.clear();
-  apiRequests.clear();
-  for (const storage of [localStorage, sessionStorage]) {
-    for (const key of Object.keys(storage)) {
-      if (key.startsWith(API_CACHE_PREFIX)) storage.removeItem(key);
-    }
-  }
-}
-
 export function getAuthToken(): string | null {
   return sessionStorage.getItem('police-admin-token');
 }
 
 export function setAuthToken(token: string) {
-  clearApiCache();
   sessionStorage.setItem('police-admin-token', token);
 }
 
@@ -100,7 +36,6 @@ export function clearAuthToken() {
 
 export function clearAuthSession() {
   sessionStorage.removeItem('police-admin-auth');
-  clearApiCache();
   clearAuthToken();
 }
 
@@ -178,9 +113,16 @@ export interface CitizenReport {
   timestamp: string;
   closedAt?: string;
   phone?: string;
+  reporterName?: string;
+  nationalId?: string;
+  reporterEmail?: string;
   location?: string;
-  numberPlate?: string;
   anonymous: boolean;
+  cyberPlatform?: string;
+  domesticRelationship?: string;
+  domesticType?: string;
+  domesticImmediateDanger?: string;
+  domesticChildren?: string;
   evidenceFiles?: EvidenceFile[];
 }
 
@@ -192,17 +134,6 @@ const REPORT_LABELS: Record<string, string> = {
   cyber: 'Cyber crime',
   domestic: 'Domestic abuse',
   emergency: 'Emergency alert',
-};
-
-const REPORT_TYPE_ALIASES: Record<string, string> = {
-  suspicious_activity: 'anonymous',
-  'suspicious-activity': 'anonymous',
-  tip: 'anonymous',
-  report_crime: 'crime',
-  hate_crime: 'hate',
-  traffic_issue: 'traffic',
-  cyber_crime: 'cyber',
-  domestic_abuse: 'domestic',
 };
 
 interface ServerReport {
@@ -217,9 +148,16 @@ interface ServerReport {
     description?: string;
     reportTitle?: string;
     phone?: string;
+    reporterName?: string;
+    nationalId?: string;
+    reporterEmail?: string;
     location?: string | Record<string, unknown>;
-    numberPlate?: string;
     anonymous?: string | boolean;
+    cyberPlatform?: string;
+    domesticRelationship?: string;
+    domesticType?: string;
+    domesticImmediateDanger?: string;
+    domesticChildren?: string;
     evidenceFiles?: EvidenceFile[];
   };
 }
@@ -255,23 +193,29 @@ function normalizeReportMessage(payload: ServerReport['payload']): string {
 export function normalizeReport(raw: ServerReport): CitizenReport {
   const p = raw.payload ?? {};
   const anon = p.anonymous === true || p.anonymous === 'true' || raw.type === 'anonymous';
-  const type = REPORT_TYPE_ALIASES[raw.type] ?? raw.type;
   const reportTitle =
     typeof (p as { reportTitle?: string }).reportTitle === 'string'
       ? (p as { reportTitle?: string }).reportTitle
       : undefined;
   return {
     id: raw.id,
-    type,
-    title: reportTitle || (REPORT_LABELS[type] ?? type.replace(/_/g, ' ')),
+    type: raw.type,
+    title: reportTitle || (REPORT_LABELS[raw.type] ?? raw.type.replace(/_/g, ' ')),
     message: normalizeReportMessage(p),
     status: raw.status || 'new',
     timestamp: raw.timestamp || new Date().toISOString(),
     closedAt: typeof raw.closedAt === 'string' ? raw.closedAt : undefined,
     phone: anon ? undefined : (typeof p.phone === 'string' ? p.phone : undefined),
+    reporterName: anon ? undefined : (typeof p.reporterName === 'string' ? p.reporterName : undefined),
+    nationalId: anon ? undefined : (typeof p.nationalId === 'string' ? p.nationalId : undefined),
+    reporterEmail: anon ? undefined : (typeof p.reporterEmail === 'string' ? p.reporterEmail : undefined),
     location: anon ? undefined : normalizeReportLocation(p.location),
-    numberPlate: typeof p.numberPlate === 'string' ? p.numberPlate : undefined,
     anonymous: anon,
+    cyberPlatform: typeof p.cyberPlatform === 'string' ? p.cyberPlatform : undefined,
+    domesticRelationship: typeof p.domesticRelationship === 'string' ? p.domesticRelationship : undefined,
+    domesticType: typeof p.domesticType === 'string' ? p.domesticType : undefined,
+    domesticImmediateDanger: typeof p.domesticImmediateDanger === 'string' ? p.domesticImmediateDanger : undefined,
+    domesticChildren: typeof p.domesticChildren === 'string' ? p.domesticChildren : undefined,
     evidenceFiles: Array.isArray(p.evidenceFiles) ? p.evidenceFiles : undefined,
   };
 }
@@ -280,15 +224,17 @@ export async function fetchActiveDistress(): Promise<DistressFetchResult> {
   const token = getAuthToken();
   if (!token) return { ok: false, reason: 'unauthorized' };
 
-  return cachedRequest(`active-distress:${token}`, 1_000, async () => {
+  try {
     const res = await fetch(`${API_BASE}/api/distress/active`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (res.status === 401) return { ok: false, reason: 'unauthorized' as const };
-    if (!res.ok) return { ok: false, reason: 'error' as const };
+    if (res.status === 401) return { ok: false, reason: 'unauthorized' };
+    if (!res.ok) return { ok: false, reason: 'error' };
     const data = await res.json();
-    return { ok: true, sessions: Array.isArray(data) ? data : [] } as DistressFetchResult;
-  }, { ok: false, reason: 'network' });
+    return { ok: true, sessions: Array.isArray(data) ? data : [] };
+  } catch {
+    return { ok: false, reason: 'network' };
+  }
 }
 
 export async function updateDistressSession(
@@ -304,41 +250,33 @@ export async function updateDistressSession(
       headers: authHeaders(),
       body: JSON.stringify(body),
     });
-    if (!res.ok) return false;
-    clearApiCache();
-    return true;
+    return res.ok;
   } catch {
     return false;
   }
 }
 
-export async function fetchReports(forceRefresh = false): Promise<CitizenReport[]> {
+export async function fetchReports(_forceRefresh = false): Promise<CitizenReport[]> {
   const token = getAuthToken();
   if (!token) return [];
-  const cacheKey = `reports:v2:${token}`;
-  const previous = readCached<CitizenReport[]>(cacheKey)?.value ?? [];
 
-  return cachedRequest(cacheKey, 15_000, async () => {
+  try {
     const res = await fetch(`${API_BASE}/api/reports`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) throw new Error(`Reports request failed: ${res.status}`);
+    if (!res.ok) return [];
     const data = (await res.json()) as ServerReport[];
-    if (!Array.isArray(data)) throw new Error('Invalid reports response');
-    const fetched = data.flatMap((raw) => {
+    if (!Array.isArray(data)) return [];
+    return data.flatMap((raw) => {
       try {
         return [normalizeReport(raw)];
       } catch {
         return [];
       }
     });
-    if (!fetched.length && previous.length) return previous;
-    const byId = new Map(previous.map((report) => [report.id, report]));
-    for (const report of fetched) byId.set(report.id, report);
-    return [...byId.values()].sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-    );
-  }, [], forceRefresh);
+  } catch {
+    return [];
+  }
 }
 
 export async function updateReportStatus(id: string, status: string): Promise<boolean> {
@@ -351,9 +289,7 @@ export async function updateReportStatus(id: string, status: string): Promise<bo
       headers: authHeaders(),
       body: JSON.stringify({ status }),
     });
-    if (!res.ok) return false;
-    clearApiCache();
-    return true;
+    return res.ok;
   } catch {
     return false;
   }
@@ -422,13 +358,14 @@ export async function updateSettings(
 }
 
 export async function fetchPublicNotices(): Promise<{ id: string; title: string; timestamp?: string }[]> {
-  return cachedRequest('public-notices', 30_000, async () => {
+  try {
     const res = await fetch(`${API_BASE}/api/notices`);
-    if (!res.ok) throw new Error(`Notices request failed: ${res.status}`);
+    if (!res.ok) return [];
     const data = await res.json();
-    if (!Array.isArray(data)) throw new Error('Invalid notices response');
-    return data;
-  }, []);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function publishNoticeToApi(notice: {
@@ -442,9 +379,9 @@ export async function publishNoticeToApi(notice: {
   reference?: string;
   acknowledgeable?: boolean;
   attachmentUrl?: string;
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+}): Promise<boolean> {
   const token = getAuthToken();
-  if (!token) return { ok: false, error: 'Sign in again before publishing.' };
+  if (!token) return false;
 
   try {
     const res = await fetch(`${API_BASE}/api/notices`, {
@@ -466,17 +403,9 @@ export async function publishNoticeToApi(notice: {
         attachmentUrl: notice.attachmentUrl || undefined,
       }),
     });
-    if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      return { ok: false, error: body.error || `Police server rejected the notice (${res.status}).` };
-    }
-    clearApiCache();
-    return { ok: true };
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : 'Could not reach the police server.',
-    };
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 

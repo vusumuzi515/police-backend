@@ -4,8 +4,8 @@
       "badge": "MELU101",
       "name": "Command Center Admin",
       "rank": "Command Center Admin",
-      "salt": "10dfb3a6d354a5f7fe4cedd403496088",
-      "passwordHash": "5abfc19cd29f90d291b87e0ccd5c4f42f508de68c18804424922ade00516a58e"
+      "salt": "8b72407fc84f4b83a400783044cce16d",
+      "passwordHash": "66c2b2f968487893f27a4a9c225ef3eb3e82d99c9df0dfed21eeb58a47efeff8"
     }
   ],
   "reports": [
@@ -397,27 +397,6 @@
             "size": 879273,
             "type": "image/jpeg",
             "url": "/uploads/1786367998918-731285f4-2a04d5bd-dd28-445f-bd88-ed75aaf2bef5.jpg"
-          }
-        ]
-      }
-    },
-    {
-      "id": "REP-1786264117375-324327",
-      "type": "anonymous",
-      "status": "closed",
-      "timestamp": "2026-08-09T08:28:37.376Z",
-      "payload": {
-        "type": "anonymous",
-        "reportTitle": "Anonymous tip",
-        "details": "Jjjjjkk",
-        "anonymous": true,
-        "evidenceFiles": [
-          {
-            "name": "e3e8abc7-8d87-4ec1-b8d1-b667424619fd.mp4",
-            "storedName": "1786264112606-c0421b64-e3e8abc7-8d87-4ec1-b8d1-b667424619fd.mp4",
-            "size": 8250888,
-            "type": "video/mp4",
-            "url": "/uploads/1786264112606-c0421b64-e3e8abc7-8d87-4ec1-b8d1-b667424619fd.mp4"
           }
         ]
       }

@@ -1,10 +1,9 @@
 /**
- * TECHLAW Police shared API with Supabase backend
+ * TECHLAW Police shared API
  * Run: npm install && npm start  (from POLICE APP folder)
  * Citizen app: citizen-mobile/ (Expo) → EXPO_PUBLIC_API_URL → this server
  * Admin app:   police-admin/ (Vite) → http://localhost:5174 or /communications after build
  * Default admin login: username MELU101, password Melu123!
- * Database: Supabase PostgreSQL with Storage bucket for evidence
  */
 const express = require('express');
 const cors = require('cors');
@@ -12,28 +11,11 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
-const { createClient } = require('@supabase/supabase-js');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'prototype-db.json');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
-
-// Supabase client
-const SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const supabase = SUPABASE_URL && SUPABASE_SERVICE_KEY 
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-  : null;
-
-const USE_SUPABASE = supabase !== null;
-
-// Debug: Log Supabase configuration on startup
-console.log('=== SUPABASE CONFIGURATION ===');
-console.log('SUPABASE_URL:', SUPABASE_URL ? 'SET' : 'NOT SET');
-console.log('SUPABASE_SERVICE_KEY:', SUPABASE_SERVICE_KEY ? 'SET' : 'NOT SET');
-console.log('USE_SUPABASE (client initialized):', USE_SUPABASE);
-console.log('==============================');
 
 const app = express();
 app.use(cors());
@@ -127,211 +109,6 @@ function writeDb(db) {
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
 }
 
-const DISTRESS_TABLE = 'distress_sessions';
-
-function distressRow(session) {
-  return {
-    id: session.id,
-    status: session.status,
-    started_at: session.startedAt || new Date().toISOString(),
-    payload: session,
-  };
-}
-
-function distressSessionFromRow(row) {
-  const payload = row && row.payload && typeof row.payload === 'object' ? row.payload : {};
-  return {
-    ...payload,
-    id: row.id || payload.id,
-    status: row.status || payload.status || 'active',
-  };
-}
-
-async function fetchDistressSessionsFromSupabase() {
-  if (!USE_SUPABASE) return null;
-  const { data, error } = await supabase
-    .from(DISTRESS_TABLE)
-    .select('id,status,started_at,payload')
-    .order('started_at', { ascending: false });
-  if (error) {
-    console.error('Supabase fetch distress sessions error:', error);
-    return null;
-  }
-  return (data || []).map(distressSessionFromRow);
-}
-
-async function saveDistressSessionToSupabase(session) {
-  if (!USE_SUPABASE) return true;
-  const { error } = await supabase.from(DISTRESS_TABLE).upsert(distressRow(session));
-  if (error) {
-    console.error('Supabase save distress session error:', error);
-    return false;
-  }
-  return true;
-}
-
-async function deleteDistressSessionFromSupabase(id) {
-  if (!USE_SUPABASE) return true;
-  const { error } = await supabase.from(DISTRESS_TABLE).delete().eq('id', id);
-  if (error) {
-    console.error('Supabase delete distress session error:', error);
-    return false;
-  }
-  return true;
-}
-
-async function loadDistressDb() {
-  const db = readDb();
-  const sessions = await fetchDistressSessionsFromSupabase();
-  if (sessions) db.distressSessions = sessions;
-  return db;
-}
-
-async function saveDistressDb(db) {
-  let savedToSupabase = !USE_SUPABASE;
-  if (USE_SUPABASE) {
-    savedToSupabase = true;
-    for (const session of db.distressSessions || []) {
-      const saved = await saveDistressSessionToSupabase(session);
-      if (!saved) savedToSupabase = false;
-    }
-  }
-  // Keep a local fallback so an alert is not lost when Supabase is unavailable.
-  writeDb(db);
-  return savedToSupabase;
-}
-
-// ============= SUPABASE HELPERS (for reports and evidence) =============
-
-async function fetchReportsFromSupabase() {
-  if (!USE_SUPABASE) return null;
-  try {
-    let result = await supabase
-      .from('reports')
-      .select('*')
-      .order('timestamp', { ascending: false });
-
-    if (result.error && result.error.code === '42703') {
-      result = await supabase
-        .from('reports')
-        .select('*');
-    }
-
-    if (result.error) {
-      console.error('Supabase fetch reports error:', result.error);
-      return null;
-    }
-    return sortDispatchQueue(result.data || []);
-  } catch (err) {
-    console.error('Supabase fetch reports exception:', err);
-    return null;
-  }
-}
-
-const DISPATCH_PRIORITY = Object.freeze({
-  GET_HELP: 0,
-  REPORT: 100,
-});
-
-function dispatchPriorityOf(item) {
-  const value = item?.dispatchPriority ?? item?.payload?.dispatchPriority;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : DISPATCH_PRIORITY.REPORT;
-}
-
-function sortDispatchQueue(items) {
-  return [...items].sort((a, b) => {
-    const priorityDifference = dispatchPriorityOf(a) - dispatchPriorityOf(b);
-    if (priorityDifference !== 0) return priorityDifference;
-    return new Date(b.timestamp || b.startedAt || 0).getTime() - new Date(a.timestamp || a.startedAt || 0).getTime();
-  });
-}
-
-async function createReportInSupabase(report) {
-  if (!USE_SUPABASE) {
-    console.error('🔴 [createReportInSupabase] USE_SUPABASE is false, skipping');
-    return null;
-  }
-  try {
-    console.error('🟡 [createReportInSupabase] Inserting into database:', report.id);
-    const { data, error } = await supabase
-      .from('reports')
-      .insert([report])
-      .select();
-    if (error) {
-      console.error('🔴 [createReportInSupabase] ERROR:', JSON.stringify(error));
-      return null;
-    }
-    console.error('✅ [createReportInSupabase] INSERTED:', data?.[0]?.id);
-    return data?.[0] || null;
-  } catch (err) {
-    console.error('🔴 [createReportInSupabase] EXCEPTION:', err.message);
-    return null;
-  }
-}
-
-async function uploadEvidenceToSupabase(bucket, fileName, fileBuffer, mimeType) {
-  if (!USE_SUPABASE) return null;
-  try {
-    const options = {
-        contentType: mimeType,
-        upsert: false
-    };
-    let { data, error } = await supabase.storage.from(bucket).upload(fileName, fileBuffer, options);
-    if (error && /bucket|not found|does not exist/i.test(error.message || '')) {
-      const created = await supabase.storage.createBucket(bucket, { public: true });
-      if (!created.error || /already exists/i.test(created.error.message || '')) {
-        ({ data, error } = await supabase.storage.from(bucket).upload(fileName, fileBuffer, options));
-      }
-    }
-    if (error) {
-      console.error('Supabase upload error:', error);
-      return null;
-    }
-    return data?.path || null;
-  } catch (err) {
-    console.error('Supabase upload exception:', err);
-    return null;
-  }
-}
-
-function getSupabaseStorageUrl(bucket, path) {
-  if (!USE_SUPABASE) return null;
-  const baseUrl = SUPABASE_URL.replace(/\/$/, '');
-  return `${baseUrl}/storage/v1/object/public/${bucket}/${path}`;
-}
-
-async function persistPanicAudio(sessionId, filename) {
-  if (!filename) return false;
-  const localPath = path.join(UPLOADS_DIR, filename);
-  if (!fs.existsSync(localPath)) return false;
-
-  let uploadedPath = null;
-  try {
-    if (USE_SUPABASE) {
-      uploadedPath = await uploadEvidenceToSupabase(
-        'evidence',
-        `panic/${sessionId}/${filename}`,
-        fs.readFileSync(localPath),
-        filename.endsWith('.wav') ? 'audio/wav' : 'audio/mp4',
-      );
-    }
-    const db = await loadDistressDb();
-    const session = db.distressSessions.find((item) => item.id === sessionId);
-    if (!session) return false;
-    session.audioUrl = uploadedPath
-      ? getSupabaseStorageUrl('evidence', uploadedPath)
-      : `/uploads/${filename}`;
-    session.audioStoragePath = uploadedPath || null;
-    session.audioStorage = uploadedPath ? 'supabase' : 'local-fallback';
-    await saveDistressDb(db);
-    return Boolean(uploadedPath);
-  } catch (err) {
-    console.error('Could not persist Get Help audio to Supabase Storage:', err);
-    return false;
-  }
-}
-
 const DEFAULT_SETTINGS = {
   /** Days to keep citizen reports on the dashboard. 0 = keep forever. */
   reportRetentionDays: 30,
@@ -412,8 +189,9 @@ function purgeExpiredRecords(db) {
   if (settings.reportRetentionDays > 0) {
     const kept = [];
     for (const report of db.reports || []) {
-      const ageDate = report.timestamp || report.closedAt;
-      if (isOlderThanDays(ageDate, settings.reportRetentionDays)) {
+      const isClosed = report.status === 'closed' || report.status === 'resolved';
+      const ageDate = report.closedAt || report.timestamp;
+      if (isClosed && isOlderThanDays(ageDate, settings.reportRetentionDays)) {
         filesToDelete.push(...collectUploadFilenamesFromReport(report));
         changed = true;
       } else {
@@ -424,7 +202,7 @@ function purgeExpiredRecords(db) {
   }
 
   if (settings.liveAlertRetentionDays > 0) {
-    const closedStatuses = new Set(['assigned', 'resolved', 'ended_by_citizen', 'expired']);
+    const closedStatuses = new Set(['resolved', 'ended_by_citizen', 'expired']);
     const kept = [];
     for (const session of db.distressSessions || []) {
       const isClosed = closedStatuses.has(session.status);
@@ -476,6 +254,8 @@ function expireStaleDistressSessions(db) {
   let changed = false;
   for (const s of db.distressSessions) {
     if (!s || s.status !== 'active') continue;
+    // Keep live Get Help alerts on the map until an officer resolves them.
+    if (s.audioUrl) continue;
     const last = s.lastPingAt || s.startedAt;
     const lastMs = last ? new Date(last).getTime() : 0;
     const staleByPing = lastMs && now - lastMs > STALE_PING_MS;
@@ -490,16 +270,9 @@ function expireStaleDistressSessions(db) {
 }
 
 function listOpenDistressSessions(db) {
-  const cutoff = Date.now() - STALE_PING_MS;
+  expireStaleDistressSessions(db);
   return db.distressSessions
-    .filter(
-      (x) =>
-        x &&
-        (x.status === 'active' || x.status === 'acknowledged') &&
-        !x.assignedOfficer &&
-        Number.isFinite(new Date(x.startedAt).getTime()) &&
-        new Date(x.startedAt).getTime() >= cutoff,
-    )
+    .filter((x) => x && (x.status === 'active' || x.status === 'acknowledged'))
     .sort((a, b) => {
       const pa = a.priority === 'high' ? 0 : 1;
       const pb = b.priority === 'high' ? 0 : 1;
@@ -747,18 +520,13 @@ app.post('/api/citizen/logout', citizenAuthMiddleware, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/reports', uploadEvidence.array('evidence', 10), async (req, res) => {
-  try {
-    const files = Array.isArray(req.files) ? req.files : [];
-    const result = await createCitizenReport(req.body || {}, files);
-    res.status(201).json(result);
-  } catch (err) {
-    console.error('/api/reports error:', err);
-    res.status(500).json({ error: 'Could not save report' });
-  }
+app.post('/api/reports', uploadEvidence.array('evidence', 10), (req, res) => {
+  const files = Array.isArray(req.files) ? req.files : [];
+  const result = createCitizenReport(req.body || {}, files);
+  res.status(201).json(result);
 });
 
-app.post('/api/reports/json', express.json({ limit: '25mb' }), async (req, res) => {
+app.post('/api/reports/json', express.json({ limit: '25mb' }), (req, res) => {
   try {
     const body = req.body || {};
     const files = [];
@@ -784,7 +552,7 @@ app.post('/api/reports/json', express.json({ limit: '25mb' }), async (req, res) 
         });
       }
     }
-    const result = await createCitizenReport(body, files);
+    const result = createCitizenReport(body, files);
     res.status(201).json(result);
   } catch (err) {
     console.error('reports/json failed', err);
@@ -812,9 +580,8 @@ app.post('/api/reports/:id/evidence', uploadEvidence.single('evidence'), (req, r
   res.json({ ok: true, id });
 });
 
-async function createCitizenReport(body, files) {
+function createCitizenReport(body, files) {
   const id = 'REP-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex').toUpperCase();
-  console.error('🔴 [createCitizenReport] Started with ID:', id);
   const parseJsonField = function (v, fallback) {
     if (typeof v !== 'string') return v == null ? fallback : v;
     try {
@@ -829,34 +596,8 @@ async function createCitizenReport(body, files) {
   }
   if (typeof payload.location === 'string') payload.location = parseJsonField(payload.location, payload.location);
   if (typeof payload.deviceInfo === 'string') payload.deviceInfo = parseJsonField(payload.deviceInfo, {});
-  
-  let evidenceFiles = [];
-  
-  // Handle file uploads to Supabase Storage if available
-  if (files.length && USE_SUPABASE) {
-    for (const f of files) {
-      try {
-        const fileBuffer = fs.readFileSync(path.join(UPLOADS_DIR, f.filename));
-        const supabasePath = `${id}/${f.filename}`;
-        const uploadedPath = await uploadEvidenceToSupabase('evidence', supabasePath, fileBuffer, f.mimetype);
-        if (uploadedPath) {
-          evidenceFiles.push({
-            name: f.originalname || f.filename,
-            storedName: uploadedPath,
-            size: f.size || 0,
-            type: f.mimetype || 'application/octet-stream',
-            url: getSupabaseStorageUrl('evidence', uploadedPath)
-          });
-        }
-      } catch (err) {
-        console.error('Error uploading evidence to Supabase:', err);
-      }
-    }
-  }
-  
-  // Fall back to local files if Supabase upload failed or not available
-  if (!evidenceFiles.length && files.length) {
-    evidenceFiles = files.map((f) => ({
+  if (files.length) {
+    payload.evidenceFiles = files.map((f) => ({
       name: f.originalname || f.filename,
       storedName: f.filename,
       size: f.size || 0,
@@ -864,74 +605,25 @@ async function createCitizenReport(body, files) {
       url: '/uploads/' + f.filename
     }));
   } else if (typeof payload.evidenceFiles === 'string') {
-    evidenceFiles = parseJsonField(payload.evidenceFiles, []);
+    payload.evidenceFiles = parseJsonField(payload.evidenceFiles, []);
   }
-  
-  if (evidenceFiles.length) {
-    payload.evidenceFiles = evidenceFiles;
-  }
-  
   const report = {
     id,
     type: payload.type || 'unknown',
     status: 'new',
-    dispatchPriority: DISPATCH_PRIORITY.REPORT,
     timestamp: new Date().toISOString(),
-    payload: {
-      ...payload,
-      dispatchPriority: DISPATCH_PRIORITY.REPORT,
-      queueClass: 'report',
-    }
+    payload: payload
   };
-  
-  // Save to Supabase if available
-  if (USE_SUPABASE) {
-    console.error('🟡 [createCitizenReport] USE_SUPABASE=true, saving to database...');
-    const supabaseReport = {
-      id: report.id,
-      type: report.type,
-      status: report.status,
-      timestamp: report.timestamp,
-      payload: report.payload
-    };
-    const result = await createReportInSupabase(supabaseReport);
-    console.error('🟡 [createCitizenReport] Supabase result:', result ? '✅ SAVED' : '❌ FAILED');
-  } else {
-    console.error('🔴 [createCitizenReport] USE_SUPABASE=false, local JSON only');
-  }
-  
-  // Also save to local JSON for backup
   const db = readDb();
   db.reports.unshift(report);
   writeDb(db);
-  
   return { id, report };
 }
 
-app.get('/api/reports', authMiddleware, async (req, res) => {
-  try {
-    let reports;
-    
-    // Try to fetch from Supabase first
-    if (USE_SUPABASE) {
-      reports = await fetchReportsFromSupabase();
-    }
-    
-    // Fall back to local JSON if Supabase not available
-    if (!reports) {
-      const db = readDb();
-      purgeExpiredRecords(db);
-      reports = db.reports;
-    }
-    
-    res.json(sortDispatchQueue(reports));
-  } catch (err) {
-    console.error('Error fetching reports:', err);
-    // Fall back to local JSON on error
-    const db = readDb();
-    purgeExpiredRecords(db);
-    res.json(db.reports);
-  }
+app.get('/api/reports', authMiddleware, (req, res) => {
+  const db = readDb();
+  purgeExpiredRecords(db);
+  res.json(db.reports);
 });
 
 app.get('/api/settings', authMiddleware, (req, res) => {
@@ -976,82 +668,12 @@ app.patch('/api/reports/:id', authMiddleware, (req, res) => {
   res.json(r);
 });
 
-app.get('/health', (_req, res) => {
-  res.status(200).json({ ok: true, service: 'police-api', uptimeSeconds: Math.floor(process.uptime()) });
-});
-
 app.get('/api/notices', (req, res) => {
   res.json(readDb().notices);
 });
 
-app.post('/api/notices/upload', authMiddleware, uploadEvidence.single('file'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    const isImage = ['image/jpeg', 'image/png', 'image/webp'].includes(req.file.mimetype);
-    if (!isImage) {
-      fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename));
-      return res.status(400).json({ error: 'Only JPG, PNG, or WEBP images are allowed' });
-    }
-
-    const fileBuffer = fs.readFileSync(path.join(UPLOADS_DIR, req.file.filename));
-    const storagePath = await uploadEvidenceToSupabase(
-      'evidence',
-      `notices/${req.file.filename}`,
-      fileBuffer,
-      req.file.mimetype,
-    );
-    res.status(201).json({
-      url: storagePath
-        ? getSupabaseStorageUrl('evidence', storagePath)
-        : `/uploads/${req.file.filename}`,
-      mimeType: req.file.mimetype,
-    });
-  } catch (err) {
-    console.error('Notice attachment upload failed:', err);
-    res.status(500).json({ error: 'Could not upload notice attachment' });
-  }
-});
-
-app.post('/api/notices', authMiddleware, (req, res) => {
-  const body = req.body || {};
-  const title = String(body.title || '').trim();
-  const message = String(body.message || '').trim();
-  if (!title) return res.status(400).json({ error: 'Notice title is required' });
-  if (!message && !body.attachmentUrl) {
-    return res.status(400).json({ error: 'Notice message or attachment is required' });
-  }
-
-  const now = new Date().toISOString();
-  const notice = {
-    id: 'NOTICE-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex').toUpperCase(),
-    title,
-    message,
-    type: body.type || body.category || 'national',
-    category: body.category || body.type || 'national',
-    scope: body.scope === 'regional' ? 'regional' : 'national',
-    region: body.region || undefined,
-    location: body.location || undefined,
-    urgency: body.urgency || (body.urgent ? 'emergency' : 'advisory'),
-    urgent: Boolean(body.urgent),
-    reference: body.reference || undefined,
-    acknowledgeable: Boolean(body.acknowledgeable),
-    attachmentUrl: body.attachmentUrl || undefined,
-    timestamp: now,
-    publishedAt: now,
-    expiresAt: body.expiresAt || undefined,
-    status: 'published',
-    createdBy: req.officer?.badge || 'communications',
-  };
-
-  const db = readDb();
-  if (!Array.isArray(db.notices)) db.notices = [];
-  db.notices = [notice, ...db.notices];
-  writeDb(db);
-  res.status(201).json(notice);
-});
-
 // ----- Citizen mobile: Get Help (panic button with audio) -----
-async function applyPanicToSession(db, body, audioFilename) {
+function applyPanicToSession(db, body, audioFilename) {
   const lat = parseFloat(body.latitude);
   const lng = parseFloat(body.longitude);
   const existingId = body.sessionId;
@@ -1075,7 +697,6 @@ async function applyPanicToSession(db, body, audioFilename) {
       if (audioFilename) s.audioUrl = '/uploads/' + audioFilename;
       s.source = body.source || s.source || 'panic_button';
       s.priority = normalizeDistressPriority(body.priority || s.priority, s.source);
-      s.dispatchPriority = DISPATCH_PRIORITY.GET_HELP;
       if (isFacataAlert(body, s.source)) {
         s.alertType = 'facata';
         s.callAnswered = true;
@@ -1083,7 +704,7 @@ async function applyPanicToSession(db, body, audioFilename) {
       if (body.callerNumber) {
         s.callerNumber = String(body.callerNumber).trim();
       }
-      await saveDistressDb(db);
+      writeDb(db);
       return {
         status: 200,
         payload: {
@@ -1103,7 +724,6 @@ async function applyPanicToSession(db, body, audioFilename) {
   const session = {
     id,
     priority: normalizeDistressPriority(body.priority, source),
-    dispatchPriority: DISPATCH_PRIORITY.GET_HELP,
     source: facata ? 'facata_call' : source,
     alertType: facata ? 'facata' : null,
     callAnswered: facata ? true : false,
@@ -1127,7 +747,7 @@ async function applyPanicToSession(db, body, audioFilename) {
     });
   }
   db.distressSessions.unshift(session);
-  await saveDistressDb(db);
+  writeDb(db);
   return {
     status: 201,
     payload: {
@@ -1140,20 +760,14 @@ async function applyPanicToSession(db, body, audioFilename) {
   };
 }
 
-app.post('/api/citizen/emergency/panic', uploadAudio.single('audio'), async (req, res) => {
-  try {
-    const db = await loadDistressDb();
-    const result = await applyPanicToSession(db, req.body || {}, req.file ? req.file.filename : null);
-    if (req.file) await persistPanicAudio(result.payload.sessionId, req.file.filename);
-    res.status(result.status).json(result.payload);
-  } catch (err) {
-    console.error('panic multipart failed', err);
-    res.status(500).json({ error: 'Could not save Get Help audio' });
-  }
+app.post('/api/citizen/emergency/panic', uploadAudio.single('audio'), (req, res) => {
+  const db = readDb();
+  const result = applyPanicToSession(db, req.body || {}, req.file ? req.file.filename : null);
+  res.status(result.status).json(result.payload);
 });
 
 /** JSON + base64 audio — reliable fallback when multipart upload fails on some phone networks. */
-app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), async (req, res) => {
+app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), (req, res) => {
   try {
     const body = req.body || {};
     const audioBase64 = body.audioBase64;
@@ -1175,9 +789,8 @@ app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), a
       Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '-panic.' + ext;
     fs.writeFileSync(path.join(UPLOADS_DIR, filename), buffer);
 
-    const db = await loadDistressDb();
-    const result = await applyPanicToSession(db, body, filename);
-    await persistPanicAudio(result.payload.sessionId, filename);
+    const db = readDb();
+    const result = applyPanicToSession(db, body, filename);
     res.status(result.status).json(result.payload);
   } catch (err) {
     console.error('panic-json failed', err);
@@ -1186,7 +799,7 @@ app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), a
 });
 
 // ----- Live distress / Get Help (legacy web citizen) -----
-app.post('/api/distress/start', async (req, res) => {
+app.post('/api/distress/start', (req, res) => {
   const body = req.body || {};
   const id = 'DIST-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex').toUpperCase();
   const lat = parseFloat(body.lat);
@@ -1217,16 +830,16 @@ app.post('/api/distress/start', async (req, res) => {
       ts: new Date().toISOString()
     });
   }
-  const db = await loadDistressDb();
+  const db = readDb();
   db.distressSessions.unshift(session);
-  await saveDistressDb(db);
+  writeDb(db);
   res.status(201).json({
     sessionId: id,
     message: 'Police can now track this device. Keep app open when safe.'
   });
 });
 
-app.post('/api/distress/:id/ping', async (req, res) => {
+app.post('/api/distress/:id/ping', (req, res) => {
   const { id } = req.params;
   const { lat, lng, accuracy } = req.body || {};
   const la = parseFloat(lat);
@@ -1234,7 +847,7 @@ app.post('/api/distress/:id/ping', async (req, res) => {
   if (!Number.isFinite(la) || !Number.isFinite(ln)) {
     return res.status(400).json({ error: 'lat/lng required' });
   }
-  const db = await loadDistressDb();
+  const db = readDb();
   const s = db.distressSessions.find((x) => x.id === id && x.status === 'active');
   if (!s) return res.status(404).json({ error: 'Session not active' });
   s.lastLat = la;
@@ -1243,20 +856,20 @@ app.post('/api/distress/:id/ping', async (req, res) => {
   s.lastPingAt = new Date().toISOString();
   s.path.push({ lat: la, lng: ln, accuracy: s.lastAccuracy, ts: s.lastPingAt });
   if (s.path.length > 500) s.path = s.path.slice(-500);
-  await saveDistressDb(db);
+  writeDb(db);
   res.json({ ok: true });
 });
 
-app.get('/api/distress/active', authMiddleware, async (req, res) => {
-  const db = await loadDistressDb();
+app.get('/api/distress/active', authMiddleware, (req, res) => {
+  const db = readDb();
   if (!Array.isArray(db.distressSessions)) db.distressSessions = [];
   purgeExpiredRecords(db);
   res.json(listOpenDistressSessions(db));
 });
 
 /** Debug: same data without auth — prototype only; remove in production */
-app.get('/api/distress/active-debug', async (req, res) => {
-  const db = await loadDistressDb();
+app.get('/api/distress/active-debug', (req, res) => {
+  const db = readDb();
   if (!Array.isArray(db.distressSessions)) db.distressSessions = [];
   const active = listOpenDistressSessions(db);
   res.json({
@@ -1266,20 +879,20 @@ app.get('/api/distress/active-debug', async (req, res) => {
   });
 });
 
-app.post('/api/distress/:id/end', async (req, res) => {
+app.post('/api/distress/:id/end', (req, res) => {
   const { id } = req.params;
-  const db = await loadDistressDb();
+  const db = readDb();
   const s = db.distressSessions.find((x) => x.id === id);
   if (!s) return res.status(404).json({ error: 'Not found' });
   s.status = 'ended_by_citizen';
   s.endedAt = new Date().toISOString();
-  await saveDistressDb(db);
+  writeDb(db);
   res.json({ ok: true });
 });
 
-app.get('/api/distress/:id/status', async (req, res) => {
+app.get('/api/distress/:id/status', (req, res) => {
   const { id } = req.params;
-  const db = await loadDistressDb();
+  const db = readDb();
   const s = db.distressSessions.find((x) => x.id === id);
   if (!s) return res.status(404).json({ error: 'Not found' });
   res.json({
@@ -1291,10 +904,10 @@ app.get('/api/distress/:id/status', async (req, res) => {
   });
 });
 
-app.patch('/api/distress/:id', authMiddleware, async (req, res) => {
+app.patch('/api/distress/:id', authMiddleware, (req, res) => {
   const { id } = req.params;
   const { status, assignment } = req.body || {};
-  const db = await loadDistressDb();
+  const db = readDb();
   const s = db.distressSessions.find((x) => x.id === id);
   if (!s) return res.status(404).json({ error: 'Not found' });
 
@@ -1314,9 +927,6 @@ app.patch('/api/distress/:id', authMiddleware, async (req, res) => {
         assignedBy: req.officer ? req.officer.badge : 'dispatch',
         note: String(assignment.note || '')
       };
-      // Assigned incidents leave the unassigned live queue immediately.
-      s.status = 'assigned';
-      s.assignedAt = new Date().toISOString();
     }
   }
 
@@ -1330,7 +940,7 @@ app.patch('/api/distress/:id', authMiddleware, async (req, res) => {
       s.acknowledgedBy = req.officer.badge;
     }
   }
-  await saveDistressDb(db);
+  writeDb(db);
   res.json(s);
 });
 
@@ -1406,7 +1016,7 @@ ensureDb();
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('API: http://localhost:' + PORT + '/');
   console.log('Citizen app: run Expo in citizen-mobile/ (points EXPO_PUBLIC_API_URL at this API)');
-  console.log('Admin dashboard (dev): http://localhost:5174');
+  console.log('Admin dashboard (dev): http://localhost:5174 — username MELU101 / Melu123!');
   if (fs.existsSync(commsAdminDir)) {
     console.log('Admin (built): http://localhost:' + PORT + '/communications/');
   } else {

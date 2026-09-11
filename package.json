@@ -11,7 +11,6 @@
     "admin:build": "npm run build --prefix police-admin"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.43.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "multer": "^2.1.1"

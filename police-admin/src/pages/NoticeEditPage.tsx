@@ -103,10 +103,10 @@ export function NoticeEditPage() {
     if (isNew) {
       const newId = createNotice(form);
       publishNotice(newId);
-      const result = await publishNoticeToApi(form);
-      if (!result.ok) {
+      const sent = await publishNoticeToApi(form);
+      if (!sent) {
         alert(
-          `Saved in this browser, but the police server rejected the notice: ${result.error}`,
+          'Saved in this browser, but could not reach the police server. Run npm start in the POLICE APP folder, then publish again.',
         );
       }
       navigate(`/notices/${newId}`);
@@ -115,10 +115,10 @@ export function NoticeEditPage() {
     if (existing) {
       updateNotice(existing.id, form);
       publishNotice(existing.id);
-      const result = await publishNoticeToApi(form);
-      if (!result.ok) {
+      const sent = await publishNoticeToApi(form);
+      if (!sent) {
         alert(
-          `Updated locally, but the police server rejected the notice: ${result.error}`,
+          'Updated locally, but could not reach the police server. Run npm start in the POLICE APP folder, then publish again.',
         );
       }
     }

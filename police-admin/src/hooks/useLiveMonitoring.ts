@@ -8,21 +8,12 @@ import {
 } from '../services/api';
 import { sortDistressSessions } from '../utils/distressSession';
 
-const POLL_MS = 3000;
-const LIVE_ALERT_WINDOW_MS = 5 * 60 * 1000;
+const POLL_MS = 2000;
 
 function isRecentUnresolvedAlert(session: {
-  startedAt: string;
   status: string;
-  assignedOfficer?: unknown;
 }) {
-  const startedAt = new Date(session.startedAt).getTime();
-  return (
-    (session.status === 'active' || session.status === 'acknowledged') &&
-    !session.assignedOfficer &&
-    Number.isFinite(startedAt) &&
-    Date.now() - startedAt <= LIVE_ALERT_WINDOW_MS
-  );
+  return session.status === 'active' || session.status === 'acknowledged';
 }
 
 function playNewAlertTone() {

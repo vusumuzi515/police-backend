@@ -159,15 +159,30 @@ function ReportDetailView({
         <div className="report-detail-card">
           <h4 className="detail-section-title">Report</h4>
           <p className="detail-message">{report.message || '—'}</p>
-          {report.numberPlate ? (
-            <p className="detail-message"><strong>Number plate:</strong> {report.numberPlate}</p>
-          ) : null}
         </div>
 
-        {!report.anonymous && (report.phone || report.location) ? (
+        {!report.anonymous && (report.reporterName || report.nationalId || report.reporterEmail || report.phone || report.location) ? (
           <div className="report-detail-card">
             <h4 className="detail-section-title">Contact</h4>
             <div className="report-contact-row">
+              {report.reporterName ? (
+                <div className="report-contact-item">
+                  <span className="report-contact-label">Name</span>
+                  <span className="report-contact-value">{report.reporterName}</span>
+                </div>
+              ) : null}
+              {report.nationalId ? (
+                <div className="report-contact-item">
+                  <span className="report-contact-label">National ID</span>
+                  <span className="report-contact-value">{report.nationalId}</span>
+                </div>
+              ) : null}
+              {report.reporterEmail ? (
+                <div className="report-contact-item">
+                  <span className="report-contact-label">Email</span>
+                  <a href={`mailto:${report.reporterEmail}`} className="report-phone-link">{report.reporterEmail}</a>
+                </div>
+              ) : null}
               {report.phone ? (
                 <div className="report-contact-item">
                   <span className="report-contact-label">Phone</span>
@@ -191,6 +206,30 @@ function ReportDetailView({
           </div>
         ) : null}
 
+        {report.type === 'cyber' && report.cyberPlatform ? (
+          <div className="report-detail-card">
+            <h4 className="detail-section-title">Cyber details</h4>
+            <div className="report-contact-row">
+              <div className="report-contact-item">
+                <span className="report-contact-label">Platform</span>
+                <span className="report-contact-value">{report.cyberPlatform}</span>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {report.type === 'domestic' && (report.domesticRelationship || report.domesticType || report.domesticImmediateDanger || report.domesticChildren) ? (
+          <div className="report-detail-card">
+            <h4 className="detail-section-title">Domestic abuse details</h4>
+            <div className="report-contact-row">
+              {report.domesticRelationship ? <div className="report-contact-item"><span className="report-contact-label">Relationship</span><span className="report-contact-value">{report.domesticRelationship}</span></div> : null}
+              {report.domesticType ? <div className="report-contact-item"><span className="report-contact-label">Abuse type</span><span className="report-contact-value">{report.domesticType}</span></div> : null}
+              {report.domesticImmediateDanger ? <div className="report-contact-item"><span className="report-contact-label">Immediate danger</span><span className="report-contact-value">{report.domesticImmediateDanger}</span></div> : null}
+              {report.domesticChildren ? <div className="report-contact-item"><span className="report-contact-label">Children involved</span><span className="report-contact-value">{report.domesticChildren}</span></div> : null}
+            </div>
+          </div>
+        ) : null}
+
         {report.evidenceFiles && report.evidenceFiles.length > 0 ? (
           <div className="report-detail-card">
             <h4 className="detail-section-title">Evidence · {report.evidenceFiles.length}</h4>
@@ -208,9 +247,7 @@ function ReportDetailView({
                     ) : video ? (
                       <video src={url} controls className="evidence-thumb" />
                     ) : (
-                      <a href={url} target="_blank" rel="noreferrer" className="evidence-file-link">
-                        {f.name || 'Evidence'}
-                      </a>
+                      <a href={url} target="_blank" rel="noreferrer" className="evidence-file-link">File</a>
                     )}
                   </div>
                 );
