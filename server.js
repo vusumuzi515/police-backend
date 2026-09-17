@@ -166,7 +166,7 @@ async function ensureSupabaseStorage() {
   if (!supabase) return;
   const { error } = await supabase.storage.createBucket(SUPABASE_STORAGE_BUCKET, {
     public: true,
-    fileSizeLimit: '80MB',
+    fileSizeLimit: '20MB',
   });
   if (error && !/already exists/i.test(error.message)) {
     throw new Error(`Supabase Storage setup failed: ${error.message}`);
