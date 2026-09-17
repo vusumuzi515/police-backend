@@ -234,7 +234,9 @@ app.use('/api', async (_req, res, next) => {
     next();
   } catch (error) {
     console.error('Supabase request refresh failed:', error.message || error);
-    res.status(503).json({ error: 'Police data is temporarily unavailable' });
+    // Keep the local Render instance available when Supabase has a transient
+    // refresh or payload error. Writes continue through the Supabase queue.
+    next();
   }
 });
 
