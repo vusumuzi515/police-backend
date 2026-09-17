@@ -7,7 +7,6 @@ import {
   APP_REPORT_CATEGORIES,
   allSolvedReports,
   countActiveByType,
-  countByStatus,
   countNewByType,
   countSolvedThisMonth,
   formatPhoneDisplay,
@@ -19,6 +18,7 @@ import {
   monthLabel,
   phoneDialUrl,
   reportPreviewLine,
+  reportFolderLabel,
   reportSolvedAt,
   reportTypeMeta,
   statusCssClass,
@@ -104,6 +104,7 @@ function ReportInboxItem({
       className={`inbox-item${selected ? ' selected' : ''}${report.status === 'new' ? ' unread' : ''}`}
       onClick={onSelect}
     >
+      <span className="case-file-icon" aria-hidden="true">▤</span>
       <div className="inbox-item-top">
         <span className="inbox-item-type">{report.title || meta.label}</span>
         <span className={`inbox-status inbox-status-${statusCssClass(report.status)}`}>
@@ -123,10 +124,12 @@ function ReportInboxItem({
 function ReportDetailView({
   report,
   onSetStatus,
+  onBackToFolder,
   busy,
 }: {
   report: CitizenReport;
   onSetStatus: (id: string, status: string) => Promise<boolean>;
+  onBackToFolder: () => void;
   busy: boolean;
 }) {
   const meta = reportTypeMeta(report.type);
@@ -137,6 +140,9 @@ function ReportDetailView({
   return (
     <div className="report-detail-inner">
       <div className="report-detail-header report-detail-card">
+        <button type="button" className="report-case-back" onClick={onBackToFolder}>
+          ← {reportFolderLabel(report.type)}
+        </button>
         <div className="report-detail-topline">
           <span className="report-type-pill" style={{ backgroundColor: `${meta.color}18`, color: meta.color }}>
             {meta.label}
@@ -147,6 +153,7 @@ function ReportDetailView({
           </span>
         </div>
         <p className="report-detail-meta">{report.id} · {formatDateTime(report.timestamp)}</p>
+        <h3 className="report-detail-title">{report.title}</h3>
       </div>
 
       <div className="report-detail-body inbox-detail-scroll">
@@ -156,83 +163,70 @@ function ReportDetailView({
           </div>
         ) : null}
 
-        <div className="report-detail-card">
-          <h4 className="detail-section-title">Report</h4>
+        <section className="report-detail-section">
+          <h4 className="detail-section-title">Incident details</h4>
           <p className="detail-message">{report.message || '—'}</p>
-        </div>
+          {report.numberPlate ? (
+            <p className="detail-field-line"><span>Number plate</span>{report.numberPlate}</p>
+          ) : null}
+          {report.submittedFields?.length ? (
+            <dl className="submitted-fields">
+              {report.submittedFields.map((field) => (
+                <div key={field.label} className="submitted-field">
+                  <dt>{field.label}</dt>
+                  <dd>{field.value}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
+        </section>
 
         {!report.anonymous && (report.reporterName || report.nationalId || report.reporterEmail || report.phone || report.location) ? (
-          <div className="report-detail-card">
-            <h4 className="detail-section-title">Contact</h4>
-            <div className="report-contact-row">
+          <section className="report-detail-section">
+            <h4 className="detail-section-title">Reporter account</h4>
+            <dl className="report-account-list">
               {report.reporterName ? (
-                <div className="report-contact-item">
-                  <span className="report-contact-label">Name</span>
-                  <span className="report-contact-value">{report.reporterName}</span>
+                <div className="report-account-row">
+                  <dt>Name</dt><dd>{report.reporterName}</dd>
                 </div>
               ) : null}
               {report.nationalId ? (
-                <div className="report-contact-item">
-                  <span className="report-contact-label">National ID</span>
-                  <span className="report-contact-value">{report.nationalId}</span>
+                <div className="report-account-row">
+                  <dt>National ID</dt><dd>{report.nationalId}</dd>
                 </div>
               ) : null}
               {report.reporterEmail ? (
-                <div className="report-contact-item">
-                  <span className="report-contact-label">Email</span>
-                  <a href={`mailto:${report.reporterEmail}`} className="report-phone-link">{report.reporterEmail}</a>
+                <div className="report-account-row">
+                  <dt>Email</dt><dd>{report.reporterEmail}</dd>
                 </div>
               ) : null}
               {report.phone ? (
-                <div className="report-contact-item">
-                  <span className="report-contact-label">Phone</span>
+                <div className="report-account-row">
+                  <dt>Phone</dt><dd>
                   {dialLink ? (
                     <a href={dialLink} className="report-phone-link">{formatPhoneDisplay(report.phone)}</a>
                   ) : (
                     <span className="report-contact-value">{formatPhoneDisplay(report.phone)}</span>
                   )}
+                  </dd>
                 </div>
               ) : null}
               {report.location ? (
-                <div className="report-contact-item">
-                  <span className="report-contact-label">Location</span>
-                  <span className="report-contact-value">{report.location}</span>
+                <div className="report-account-row">
+                  <dt>Location</dt><dd><span className="report-contact-value">{report.location}</span>
                   {mapLink ? (
                     <a href={mapLink} target="_blank" rel="noreferrer" className="report-map-link">Map</a>
                   ) : null}
+                  </dd>
                 </div>
               ) : null}
-            </div>
-          </div>
-        ) : null}
-
-        {report.type === 'cyber' && report.cyberPlatform ? (
-          <div className="report-detail-card">
-            <h4 className="detail-section-title">Cyber details</h4>
-            <div className="report-contact-row">
-              <div className="report-contact-item">
-                <span className="report-contact-label">Platform</span>
-                <span className="report-contact-value">{report.cyberPlatform}</span>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {report.type === 'domestic' && (report.domesticRelationship || report.domesticType || report.domesticImmediateDanger || report.domesticChildren) ? (
-          <div className="report-detail-card">
-            <h4 className="detail-section-title">Domestic abuse details</h4>
-            <div className="report-contact-row">
-              {report.domesticRelationship ? <div className="report-contact-item"><span className="report-contact-label">Relationship</span><span className="report-contact-value">{report.domesticRelationship}</span></div> : null}
-              {report.domesticType ? <div className="report-contact-item"><span className="report-contact-label">Abuse type</span><span className="report-contact-value">{report.domesticType}</span></div> : null}
-              {report.domesticImmediateDanger ? <div className="report-contact-item"><span className="report-contact-label">Immediate danger</span><span className="report-contact-value">{report.domesticImmediateDanger}</span></div> : null}
-              {report.domesticChildren ? <div className="report-contact-item"><span className="report-contact-label">Children involved</span><span className="report-contact-value">{report.domesticChildren}</span></div> : null}
-            </div>
-          </div>
+            </dl>
+          </section>
         ) : null}
 
         {report.evidenceFiles && report.evidenceFiles.length > 0 ? (
-          <div className="report-detail-card">
-            <h4 className="detail-section-title">Evidence · {report.evidenceFiles.length}</h4>
+          <section className="report-detail-section">
+            <h4 className="detail-section-title">Evidence <span className="detail-section-count">{report.evidenceFiles.length} file{report.evidenceFiles.length === 1 ? '' : 's'}</span></h4>
             <div className="evidence-gallery">
               {report.evidenceFiles.map((f) => {
                 const url = mediaUrl(f.url);
@@ -247,16 +241,18 @@ function ReportDetailView({
                     ) : video ? (
                       <video src={url} controls className="evidence-thumb" />
                     ) : (
-                      <a href={url} target="_blank" rel="noreferrer" className="evidence-file-link">File</a>
+                      <a href={url} target="_blank" rel="noreferrer" className="evidence-file-link">
+                        {f.name || 'Evidence'}
+                      </a>
                     )}
                   </div>
                 );
               })}
             </div>
-          </div>
+          </section>
         ) : null}
 
-        <div className="report-detail-card report-detail-card-actions">
+        <footer className="report-detail-actions">
           <div className="btn-group report-actions">
             {report.status === 'new' ? (
               <button
@@ -286,7 +282,7 @@ function ReportDetailView({
               <Link to="/monitoring" className="btn btn-ghost">Live map</Link>
             ) : null}
           </div>
-        </div>
+        </footer>
       </div>
     </div>
   );
@@ -330,9 +326,15 @@ function ReportsWorkspace({
       <div className="panel-header reports-workspace-header">
         <div className="reports-filter-context">
           <button type="button" className="btn btn-ghost reports-back-btn" onClick={onBack}>
-            ← Back
+            ← Report folders
           </button>
-          <h3>{title}</h3>
+          <div className="reports-folder-heading">
+            <span className="reports-folder-icon" aria-hidden="true">▰</span>
+            <div>
+              <h3>{title}</h3>
+              <p className="reports-folder-path">Reports / {title}</p>
+            </div>
+          </div>
           <p className="panel-subtitle reports-filter-sub">{subtitle}</p>
         </div>
         {statusTabs && statusFilter && onStatusFilter && tabCounts ? (
@@ -352,8 +354,12 @@ function ReportsWorkspace({
         ) : null}
       </div>
 
-      <div className="reports-workspace-body">
-        <div className="reports-list-column">
+      <div className={`reports-workspace-body${selected ? ' case-open' : ' folder-open'}`}>
+        {!selected ? <div className="reports-list-column">
+          <div className="folder-contents-heading">
+            <span>Contents</span>
+            <span>{list.length} case{list.length === 1 ? '' : 's'}</span>
+          </div>
           {loading && list.length === 0 ? (
             <div className="empty-state"><p>Loading…</p></div>
           ) : list.length === 0 ? (
@@ -366,30 +372,44 @@ function ReportsWorkspace({
                 <ReportInboxItem
                   key={r.id}
                   report={r}
-                  selected={selectedId === r.id || selected?.id === r.id}
+                  selected={selectedId === r.id}
                   onSelect={() => onSelect(r.id)}
                   showSolvedTime={showSolvedTime}
                 />
               ))}
             </div>
           )}
-        </div>
+        </div> : null}
 
-        <div className="reports-detail-column">
+        {selected ? <div className="reports-detail-column reports-detail-full">
           {selected ? (
             <ReportDetailView
               report={selected}
               busy={actionBusy}
               onSetStatus={onSetStatus}
+              onBackToFolder={() => onSelect('')}
             />
           ) : (
             <div className="empty-state">
               <p>Select a case</p>
             </div>
           )}
-        </div>
+        </div> : null}
       </div>
     </div>
+  );
+}
+
+function CasesFolderEntry({ count, onOpen }: { count: number; onOpen: () => void }) {
+  return (
+    <button type="button" className="cases-folder-entry" onClick={onOpen}>
+      <span className="cases-folder-icon" aria-hidden="true">▰</span>
+      <span className="cases-folder-copy">
+        <strong>Cases</strong>
+        <span>{count} reported case{count === 1 ? '' : 's'}</span>
+      </span>
+      <span className="cases-folder-arrow" aria-hidden="true">›</span>
+    </button>
   );
 }
 
@@ -397,7 +417,7 @@ export function ReportsPage() {
   const { reports, loading, refresh, setStatus } = useReportsInbox();
   const [homeView, setHomeView] = useState<HomeView>('categories');
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('active');
+  const [caseContentsOpen, setCaseContentsOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [solvedToast, setSolvedToast] = useState<string | null>(null);
@@ -421,41 +441,31 @@ export function ReportsPage() {
     return sorted.filter((r) => r.type === typeFilter);
   }, [sorted, typeFilter]);
 
-  const filtered = useMemo(() => {
-    if (statusFilter === 'active') return byType.filter((r) => !isReportClosed(r.status));
-    if (statusFilter === 'closed') return byType.filter((r) => isReportClosed(r.status));
-    return byType.filter((r) => r.status === statusFilter);
-  }, [byType, statusFilter]);
+  const filtered = byType;
 
-  const categorySelected = filtered.find((r) => r.id === selectedId) ?? filtered[0] ?? null;
-  const solvedSelected = solvedAll.find((r) => r.id === selectedId) ?? solvedAll[0] ?? null;
+  const categorySelected = filtered.find((r) => r.id === selectedId) ?? null;
+  const solvedSelected = solvedAll.find((r) => r.id === selectedId) ?? null;
   const activeCategory = APP_REPORT_CATEGORIES.find((c) => c.id === typeFilter);
-
-  const statusTabs: { id: StatusFilter; label: string }[] = [
-    { id: 'active', label: 'Active' },
-    { id: 'new', label: 'New' },
-    { id: 'reviewing', label: 'In review' },
-    { id: 'closed', label: 'Solved' },
-  ];
 
   const openCategory = (id: string) => {
     setHomeView('categories');
     setTypeFilter(id);
-    setStatusFilter('active');
+    setCaseContentsOpen(false);
     setSelectedId(null);
   };
 
   const openSolved = () => {
     setTypeFilter(null);
+    setCaseContentsOpen(false);
     setHomeView('solved');
     setSelectedId(null);
   };
 
   const goHome = () => {
     setTypeFilter(null);
+    setCaseContentsOpen(false);
     setHomeView('categories');
     setSelectedId(null);
-    setStatusFilter('active');
   };
 
   const handleSetStatus = async (id: string, status: string) => {
@@ -468,9 +478,6 @@ export function ReportsPage() {
         const label = report?.title || reportTypeMeta(report?.type || '').label || 'Case';
         setSolvedToast(`${label} marked as solved`);
         setSelectedId(null);
-        if (homeView !== 'solved') {
-          setStatusFilter('active');
-        }
       }
       return true;
     } finally {
@@ -536,7 +543,7 @@ export function ReportsPage() {
 
       {showingSolved ? (
         <ReportsWorkspace
-          title="Solved & attended"
+          title="Solved cases"
           subtitle={`${solvedAll.length} case${solvedAll.length === 1 ? '' : 's'}`}
           list={solvedAll}
           loading={loading}
@@ -550,29 +557,32 @@ export function ReportsPage() {
         />
       ) : null}
 
-      {showingCategory && activeCategory ? (
+      {showingCategory && activeCategory && !caseContentsOpen ? (
+        <section className="reports-folder-panel">
+          <div className="reports-folder-panel-header">
+            <div>
+              <h3>{reportFolderLabel(activeCategory.id)}</h3>
+              <p className="panel-subtitle">Cases</p>
+            </div>
+          </div>
+          <div className="reports-folder-contents">
+            <CasesFolderEntry count={byType.length} onOpen={() => setCaseContentsOpen(true)} />
+          </div>
+        </section>
+      ) : null}
+
+      {showingCategory && activeCategory && caseContentsOpen ? (
         <ReportsWorkspace
-          title={activeCategory.label}
-          subtitle={`${filtered.length} report${filtered.length === 1 ? '' : 's'}${
-            statusFilter !== 'active' ? ` · ${statusTabs.find((t) => t.id === statusFilter)?.label}` : ' · Active'
-          }`}
+          title={reportFolderLabel(activeCategory.id)}
+          subtitle={`${filtered.length} report${filtered.length === 1 ? '' : 's'}`}
           list={filtered}
           loading={loading}
           selected={categorySelected}
           selectedId={selectedId}
-          onBack={goHome}
+          onBack={() => setCaseContentsOpen(false)}
           onSelect={setSelectedId}
           onSetStatus={handleSetStatus}
           actionBusy={actionBusy}
-          statusTabs={statusTabs}
-          statusFilter={statusFilter}
-          onStatusFilter={setStatusFilter}
-          tabCounts={{
-            active: byType.filter((r) => !isReportClosed(r.status)).length,
-            new: countByStatus(byType, 'new'),
-            reviewing: countByStatus(byType, 'reviewing'),
-            closed: countByStatus(byType, 'closed'),
-          }}
         />
       ) : null}
     </Layout>

@@ -78,6 +78,19 @@ export function reportTypeMeta(type: string) {
   );
 }
 
+export function reportFolderLabel(type: string): string {
+  const labels: Record<string, string> = {
+    anonymous: 'Anonymous cases',
+    crime: 'Crime cases',
+    hate: 'Hate cases',
+    traffic: 'Traffic cases',
+    cyber: 'Cyber cases',
+    domestic: 'Domestic abuse cases',
+    emergency: 'Emergency cases',
+  };
+  return labels[type] ?? `${reportTypeMeta(type).label} cases`;
+}
+
 export function countByType(reports: CitizenReport[], type: string): number {
   if (type === 'all') return reports.length;
   return reports.filter((r) => r.type === type).length;

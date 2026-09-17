@@ -1,9 +1,10 @@
 /**
- * TECHLAW Police shared API
+ * TECHLAW Police shared API with Supabase backend
  * Run: npm install && npm start  (from POLICE APP folder)
  * Citizen app: citizen-mobile/ (Expo) → EXPO_PUBLIC_API_URL → this server
  * Admin app:   police-admin/ (Vite) → http://localhost:5174 or /communications after build
  * Default admin login: username MELU101, password Melu123!
+ * Database: Supabase PostgreSQL with Storage bucket for evidence
  */
 const express = require('express');
 const cors = require('cors');
@@ -17,19 +18,22 @@ const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'prototype-db.json');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'police-uploads';
-const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    })
-  : null;
-let supabaseWriteChain = Promise.resolve();
 
-if (process.env.NODE_ENV === 'production' && !supabase) {
-  throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production.');
-}
+// Supabase client
+const SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabase = SUPABASE_URL && SUPABASE_SERVICE_KEY 
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+  : null;
+
+const USE_SUPABASE = supabase !== null;
+
+// Debug: Log Supabase configuration on startup
+console.log('=== SUPABASE CONFIGURATION ===');
+console.log('SUPABASE_URL:', SUPABASE_URL ? 'SET (' + SUPABASE_URL.substring(0, 30) + '...)' : 'NOT SET');
+console.log('SUPABASE_SERVICE_KEY:', SUPABASE_SERVICE_KEY ? 'SET (' + SUPABASE_SERVICE_KEY.substring(0, 20) + '...)' : 'NOT SET');
+console.log('USE_SUPABASE (client initialized):', USE_SUPABASE);
+console.log('==============================');
 
 const app = express();
 app.use(cors());
@@ -109,110 +113,6 @@ function ensureDb() {
   }
 }
 
-function snapshotDb(db) {
-  return JSON.parse(JSON.stringify(db));
-}
-
-async function hydrateDbFromSupabase() {
-  if (!supabase) {
-    console.warn('Supabase is not configured; using local JSON storage.');
-    return;
-  }
-
-  async function refreshDbFromSupabase() {
-    if (!supabase) return;
-    await supabaseWriteChain;
-    const { data, error } = await supabase
-      .from('police_app_state')
-      .select('state')
-      .eq('id', 'singleton')
-      .maybeSingle();
-    if (error) throw new Error(`Supabase state refresh failed: ${error.message}`);
-    if (data?.state && typeof data.state === 'object') {
-      fs.writeFileSync(DB_PATH, JSON.stringify(snapshotDb(data.state), null, 2), 'utf8');
-    }
-  }
-
-  const { data, error } = await supabase
-    .from('police_app_state')
-    .select('state')
-    .eq('id', 'singleton')
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(`Supabase state read failed: ${error.message}`);
-  }
-
-  if (data?.state && typeof data.state === 'object') {
-    const hydrated = snapshotDb(data.state);
-    fs.writeFileSync(DB_PATH, JSON.stringify(hydrated, null, 2), 'utf8');
-    console.log('Supabase connected: loaded police application state.');
-    return;
-  }
-
-  const localState = readDb();
-  const { error: seedError } = await supabase.from('police_app_state').upsert({
-    id: 'singleton',
-    state: localState,
-    updated_at: new Date().toISOString(),
-  });
-  if (seedError) {
-    throw new Error(`Supabase state seed failed: ${seedError.message}`);
-  }
-  console.log('Supabase connected: seeded police application state.');
-}
-
-async function ensureSupabaseStorage() {
-  if (!supabase) return;
-  const { error } = await supabase.storage.createBucket(SUPABASE_STORAGE_BUCKET, {
-    public: true,
-    fileSizeLimit: '20MB',
-  });
-  if (error && !/already exists/i.test(error.message)) {
-    throw new Error(`Supabase Storage setup failed: ${error.message}`);
-  }
-}
-
-async function storeUpload(filePath, storagePath, contentType) {
-  if (!supabase) {
-    return { url: '/uploads/' + path.basename(filePath), storagePath: null };
-  }
-
-  const buffer = await fs.promises.readFile(filePath);
-  const { error } = await supabase.storage
-    .from(SUPABASE_STORAGE_BUCKET)
-    .upload(storagePath, buffer, { contentType, upsert: false });
-  if (error) throw new Error(`Supabase Storage upload failed: ${error.message}`);
-
-  const { data } = supabase.storage
-    .from(SUPABASE_STORAGE_BUCKET)
-    .getPublicUrl(storagePath);
-  return { url: data.publicUrl, storagePath };
-}
-
-async function storeMulterFile(file, folder) {
-  const storagePath = `${folder}/${file.filename}`;
-  const stored = await storeUpload(file.path, storagePath, file.mimetype || 'application/octet-stream');
-  return { ...file, storagePath: stored.storagePath, storageUrl: stored.url };
-}
-
-function queueSupabaseWrite(db) {
-  if (!supabase) return;
-  const state = snapshotDb(db);
-  supabaseWriteChain = supabaseWriteChain
-    .then(async () => {
-      const { error } = await supabase.from('police_app_state').upsert({
-        id: 'singleton',
-        state,
-        updated_at: new Date().toISOString(),
-      });
-      if (error) throw error;
-    })
-    .catch((error) => {
-      console.error('Supabase state write failed:', error.message || error);
-    });
-}
-
 function readDb() {
   ensureDb();
   const db = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
@@ -225,20 +125,214 @@ function readDb() {
 function writeDb(db) {
   db.settings = normalizeSettings(db.settings);
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
-  queueSupabaseWrite(db);
 }
 
-app.use('/api', async (_req, res, next) => {
-  try {
-    await refreshDbFromSupabase();
-    next();
-  } catch (error) {
-    console.error('Supabase request refresh failed:', error.message || error);
-    // Keep the local Render instance available when Supabase has a transient
-    // refresh or payload error. Writes continue through the Supabase queue.
-    next();
+const DISTRESS_TABLE = 'distress_sessions';
+
+function distressRow(session) {
+  return {
+    id: session.id,
+    status: session.status,
+    started_at: session.startedAt || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    payload: session,
+  };
+}
+
+function distressSessionFromRow(row) {
+  const payload = row && row.payload && typeof row.payload === 'object' ? row.payload : {};
+  return {
+    ...payload,
+    id: row.id || payload.id,
+    status: row.status || payload.status || 'active',
+  };
+}
+
+async function fetchDistressSessionsFromSupabase() {
+  if (!USE_SUPABASE) return null;
+  const { data, error } = await supabase
+    .from(DISTRESS_TABLE)
+    .select('id,status,started_at,updated_at,payload')
+    .order('started_at', { ascending: false });
+  if (error) {
+    console.error('Supabase fetch distress sessions error:', error);
+    return null;
   }
-});
+  return (data || []).map(distressSessionFromRow);
+}
+
+async function saveDistressSessionToSupabase(session) {
+  if (!USE_SUPABASE) return true;
+  const { error } = await supabase.from(DISTRESS_TABLE).upsert(distressRow(session));
+  if (error) {
+    console.error('Supabase save distress session error:', error);
+    return false;
+  }
+  return true;
+}
+
+async function deleteDistressSessionFromSupabase(id) {
+  if (!USE_SUPABASE) return true;
+  const { error } = await supabase.from(DISTRESS_TABLE).delete().eq('id', id);
+  if (error) {
+    console.error('Supabase delete distress session error:', error);
+    return false;
+  }
+  return true;
+}
+
+async function loadDistressDb() {
+  const db = readDb();
+  const sessions = await fetchDistressSessionsFromSupabase();
+  if (sessions) db.distressSessions = sessions;
+  return db;
+}
+
+async function saveDistressDb(db) {
+  let savedToSupabase = !USE_SUPABASE;
+  if (USE_SUPABASE) {
+    savedToSupabase = true;
+    for (const session of db.distressSessions || []) {
+      const saved = await saveDistressSessionToSupabase(session);
+      if (!saved) savedToSupabase = false;
+    }
+  }
+  // Keep a local fallback so an alert is not lost when Supabase is unavailable.
+  writeDb(db);
+  return savedToSupabase;
+}
+
+// ============= SUPABASE HELPERS (for reports and evidence) =============
+
+async function fetchReportsFromSupabase() {
+  if (!USE_SUPABASE) return null;
+  try {
+    let result = await supabase
+      .from('reports')
+      .select('*')
+      .order('timestamp', { ascending: false });
+
+    if (result.error && result.error.code === '42703') {
+      result = await supabase
+        .from('reports')
+        .select('*');
+    }
+
+    if (result.error) {
+      console.error('Supabase fetch reports error:', result.error);
+      return null;
+    }
+    return result.data || [];
+  } catch (err) {
+    console.error('Supabase fetch reports exception:', err);
+    return null;
+  }
+}
+
+async function createReportInSupabase(report) {
+  if (!USE_SUPABASE) {
+    console.error('🔴 [createReportInSupabase] USE_SUPABASE is false, skipping');
+    return null;
+  }
+  try {
+    console.error('🟡 [createReportInSupabase] Inserting into database:', report.id);
+    const { data, error } = await supabase
+      .from('reports')
+      .insert([report])
+      .select();
+    if (error) {
+      console.error('🔴 [createReportInSupabase] ERROR:', JSON.stringify(error));
+      return null;
+    }
+    console.error('✅ [createReportInSupabase] INSERTED:', data?.[0]?.id);
+    return data?.[0] || null;
+  } catch (err) {
+    console.error('🔴 [createReportInSupabase] EXCEPTION:', err.message);
+    return null;
+  }
+}
+
+async function uploadEvidenceToSupabase(bucket, fileName, fileBuffer, mimeType) {
+  if (!USE_SUPABASE) return null;
+  try {
+    const options = {
+        contentType: mimeType,
+        upsert: false
+    };
+    let { data, error } = await supabase.storage.from(bucket).upload(fileName, fileBuffer, options);
+    if (error && /bucket|not found|does not exist/i.test(error.message || '')) {
+      const created = await supabase.storage.createBucket(bucket, { public: true });
+      if (!created.error || /already exists/i.test(created.error.message || '')) {
+        ({ data, error } = await supabase.storage.from(bucket).upload(fileName, fileBuffer, options));
+      }
+    }
+    if (error) {
+      console.error('Supabase upload error:', error);
+      return null;
+    }
+    return data?.path || null;
+  } catch (err) {
+    console.error('Supabase upload exception:', err);
+    return null;
+  }
+}
+
+function getSupabaseStorageUrl(bucket, path) {
+  if (!USE_SUPABASE) return null;
+  const baseUrl = SUPABASE_URL.replace(/\/$/, '');
+  return `${baseUrl}/storage/v1/object/public/${bucket}/${path}`;
+}
+
+async function persistPanicAudio(sessionId, filename) {
+  if (!filename) return false;
+  const localPath = path.join(UPLOADS_DIR, filename);
+  if (!fs.existsSync(localPath)) return false;
+
+  let uploadedPath = null;
+  try {
+    if (USE_SUPABASE) {
+      uploadedPath = await uploadEvidenceToSupabase(
+        'evidence',
+        `panic/${sessionId}/${filename}`,
+        fs.readFileSync(localPath),
+        filename.endsWith('.wav') ? 'audio/wav' : 'audio/mp4',
+      );
+    }
+    const db = await loadDistressDb();
+    const session = db.distressSessions.find((item) => item.id === sessionId);
+    if (!session) return false;
+    const audioUrl = uploadedPath
+      ? getSupabaseStorageUrl('evidence', uploadedPath)
+      : `/uploads/${filename}`;
+    const audioUploadedAt = new Date().toISOString();
+    const audioRecords = Array.isArray(session.audioRecords) ? session.audioRecords : [];
+    if (!audioRecords.some((record) => record && record.url === audioUrl)) {
+      audioRecords.push({ url: audioUrl, uploadedAt: audioUploadedAt });
+    }
+    session.audioRecords = audioRecords;
+    const audioUrls = Array.isArray(session.audioUrls) ? session.audioUrls : [];
+    if (!audioUrls.includes(audioUrl)) audioUrls.push(audioUrl);
+    session.audioUrls = audioUrls;
+    session.audioUrl = audioUrl;
+    session.audioUploadedAt = audioUploadedAt;
+    session.audioStoragePath = uploadedPath || null;
+    session.audioStorage = uploadedPath ? 'supabase' : 'local-fallback';
+    await saveDistressDb(db);
+    return Boolean(uploadedPath);
+  } catch (err) {
+    console.error('Could not persist Get Help audio to Supabase Storage:', err);
+    return false;
+  }
+}
+
+function citizenIdentityFromBody(body) {
+  const identity = {};
+  for (const field of ['reporterName', 'nationalId', 'reporterPhone', 'reporterEmail']) {
+    const value = String(body[field] || '').trim();
+    if (value) identity[field] = value;
+  }
+  return identity;
+}
 
 const DEFAULT_SETTINGS = {
   /** Days to keep citizen reports on the dashboard. 0 = keep forever. */
@@ -320,9 +414,8 @@ function purgeExpiredRecords(db) {
   if (settings.reportRetentionDays > 0) {
     const kept = [];
     for (const report of db.reports || []) {
-      const isClosed = report.status === 'closed' || report.status === 'resolved';
-      const ageDate = report.closedAt || report.timestamp;
-      if (isClosed && isOlderThanDays(ageDate, settings.reportRetentionDays)) {
+      const ageDate = report.timestamp || report.closedAt;
+      if (isOlderThanDays(ageDate, settings.reportRetentionDays)) {
         filesToDelete.push(...collectUploadFilenamesFromReport(report));
         changed = true;
       } else {
@@ -333,7 +426,7 @@ function purgeExpiredRecords(db) {
   }
 
   if (settings.liveAlertRetentionDays > 0) {
-    const closedStatuses = new Set(['resolved', 'ended_by_citizen', 'expired']);
+    const closedStatuses = new Set(['assigned', 'resolved', 'ended_by_citizen', 'expired']);
     const kept = [];
     for (const session of db.distressSessions || []) {
       const isClosed = closedStatuses.has(session.status);
@@ -385,8 +478,6 @@ function expireStaleDistressSessions(db) {
   let changed = false;
   for (const s of db.distressSessions) {
     if (!s || s.status !== 'active') continue;
-    // Keep live Get Help alerts on the map until an officer resolves them.
-    if (s.audioUrl) continue;
     const last = s.lastPingAt || s.startedAt;
     const lastMs = last ? new Date(last).getTime() : 0;
     const staleByPing = lastMs && now - lastMs > STALE_PING_MS;
@@ -401,9 +492,16 @@ function expireStaleDistressSessions(db) {
 }
 
 function listOpenDistressSessions(db) {
-  expireStaleDistressSessions(db);
+  const cutoff = Date.now() - STALE_PING_MS;
   return db.distressSessions
-    .filter((x) => x && (x.status === 'active' || x.status === 'acknowledged'))
+    .filter(
+      (x) =>
+        x &&
+        (x.status === 'active' || x.status === 'acknowledged') &&
+        !x.assignedOfficer &&
+        Number.isFinite(new Date(x.startedAt).getTime()) &&
+        new Date(x.startedAt).getTime() >= cutoff,
+    )
     .sort((a, b) => {
       const pa = a.priority === 'high' ? 0 : 1;
       const pb = b.priority === 'high' ? 0 : 1;
@@ -654,12 +752,11 @@ app.post('/api/citizen/logout', citizenAuthMiddleware, (req, res) => {
 app.post('/api/reports', uploadEvidence.array('evidence', 10), async (req, res) => {
   try {
     const files = Array.isArray(req.files) ? req.files : [];
-    const storedFiles = await Promise.all(files.map((file) => storeMulterFile(file, 'reports')));
-    const result = createCitizenReport(req.body || {}, storedFiles);
+    const result = await createCitizenReport(req.body || {}, files);
     res.status(201).json(result);
   } catch (err) {
-    console.error('reports upload failed', err);
-    res.status(500).json({ error: 'Could not store report evidence' });
+    console.error('/api/reports error:', err);
+    res.status(500).json({ error: 'Could not save report' });
   }
 });
 
@@ -681,18 +778,15 @@ app.post('/api/reports/json', express.json({ limit: '25mb' }), async (req, res) 
         const filename =
           Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '-evidence.' + ext;
         fs.writeFileSync(path.join(UPLOADS_DIR, filename), buffer);
-        const stored = await storeUpload(path.join(UPLOADS_DIR, filename), `reports/${filename}`, mime);
         files.push({
           originalname: body.evidenceName || filename,
           filename,
           size: buffer.length,
           mimetype: mime,
-          storagePath: stored.storagePath,
-          storageUrl: stored.url,
         });
       }
     }
-    const result = createCitizenReport(body, files);
+    const result = await createCitizenReport(body, files);
     res.status(201).json(result);
   } catch (err) {
     console.error('reports/json failed', err);
@@ -700,29 +794,29 @@ app.post('/api/reports/json', express.json({ limit: '25mb' }), async (req, res) 
   }
 });
 
-app.post('/api/reports/:id/evidence', uploadEvidence.single('evidence'), async (req, res) => {
+app.post('/api/reports/:id/evidence', uploadEvidence.single('evidence'), (req, res) => {
   const { id } = req.params;
   const db = readDb();
   const report = db.reports.find((x) => x.id === id);
   if (!report) return res.status(404).json({ error: 'Report not found' });
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const stored = await storeMulterFile(req.file, 'reports');
 
   if (!report.payload) report.payload = {};
   if (!Array.isArray(report.payload.evidenceFiles)) report.payload.evidenceFiles = [];
   report.payload.evidenceFiles.push({
     name: req.file.originalname || req.file.filename,
-    storedName: stored.storagePath || req.file.filename,
+    storedName: req.file.filename,
     size: req.file.size || 0,
     type: req.file.mimetype || 'application/octet-stream',
-    url: stored.storageUrl,
+    url: '/uploads/' + req.file.filename,
   });
   writeDb(db);
   res.json({ ok: true, id });
 });
 
-function createCitizenReport(body, files) {
+async function createCitizenReport(body, files) {
   const id = 'REP-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex').toUpperCase();
+  console.error('🔴 [createCitizenReport] Started with ID:', id);
   const parseJsonField = function (v, fallback) {
     if (typeof v !== 'string') return v == null ? fallback : v;
     try {
@@ -737,17 +831,48 @@ function createCitizenReport(body, files) {
   }
   if (typeof payload.location === 'string') payload.location = parseJsonField(payload.location, payload.location);
   if (typeof payload.deviceInfo === 'string') payload.deviceInfo = parseJsonField(payload.deviceInfo, {});
-  if (files.length) {
-    payload.evidenceFiles = files.map((f) => ({
+  
+  let evidenceFiles = [];
+  
+  // Handle file uploads to Supabase Storage if available
+  if (files.length && USE_SUPABASE) {
+    for (const f of files) {
+      try {
+        const fileBuffer = fs.readFileSync(path.join(UPLOADS_DIR, f.filename));
+        const supabasePath = `${id}/${f.filename}`;
+        const uploadedPath = await uploadEvidenceToSupabase('evidence', supabasePath, fileBuffer, f.mimetype);
+        if (uploadedPath) {
+          evidenceFiles.push({
+            name: f.originalname || f.filename,
+            storedName: uploadedPath,
+            size: f.size || 0,
+            type: f.mimetype || 'application/octet-stream',
+            url: getSupabaseStorageUrl('evidence', uploadedPath)
+          });
+        }
+      } catch (err) {
+        console.error('Error uploading evidence to Supabase:', err);
+      }
+    }
+  }
+  
+  // Fall back to local files if Supabase upload failed or not available
+  if (!evidenceFiles.length && files.length) {
+    evidenceFiles = files.map((f) => ({
       name: f.originalname || f.filename,
-      storedName: f.storagePath || f.filename,
+      storedName: f.filename,
       size: f.size || 0,
       type: f.mimetype || 'application/octet-stream',
-      url: f.storageUrl || '/uploads/' + f.filename
+      url: '/uploads/' + f.filename
     }));
   } else if (typeof payload.evidenceFiles === 'string') {
-    payload.evidenceFiles = parseJsonField(payload.evidenceFiles, []);
+    evidenceFiles = parseJsonField(payload.evidenceFiles, []);
   }
+  
+  if (evidenceFiles.length) {
+    payload.evidenceFiles = evidenceFiles;
+  }
+  
   const report = {
     id,
     type: payload.type || 'unknown',
@@ -755,16 +880,55 @@ function createCitizenReport(body, files) {
     timestamp: new Date().toISOString(),
     payload: payload
   };
+  
+  // Save to Supabase if available
+  if (USE_SUPABASE) {
+    console.error('🟡 [createCitizenReport] USE_SUPABASE=true, saving to database...');
+    const supabaseReport = {
+      id: report.id,
+      type: report.type,
+      status: report.status,
+      timestamp: report.timestamp,
+      payload: report.payload
+    };
+    const result = await createReportInSupabase(supabaseReport);
+    console.error('🟡 [createCitizenReport] Supabase result:', result ? '✅ SAVED' : '❌ FAILED');
+  } else {
+    console.error('🔴 [createCitizenReport] USE_SUPABASE=false, local JSON only');
+  }
+  
+  // Also save to local JSON for backup
   const db = readDb();
   db.reports.unshift(report);
   writeDb(db);
+  
   return { id, report };
 }
 
-app.get('/api/reports', authMiddleware, (req, res) => {
-  const db = readDb();
-  purgeExpiredRecords(db);
-  res.json(db.reports);
+app.get('/api/reports', authMiddleware, async (req, res) => {
+  try {
+    let reports;
+    
+    // Try to fetch from Supabase first
+    if (USE_SUPABASE) {
+      reports = await fetchReportsFromSupabase();
+    }
+    
+    // Fall back to local JSON if Supabase not available
+    if (!reports) {
+      const db = readDb();
+      purgeExpiredRecords(db);
+      reports = db.reports;
+    }
+    
+    res.json(reports);
+  } catch (err) {
+    console.error('Error fetching reports:', err);
+    // Fall back to local JSON on error
+    const db = readDb();
+    purgeExpiredRecords(db);
+    res.json(db.reports);
+  }
 });
 
 app.get('/api/settings', authMiddleware, (req, res) => {
@@ -813,8 +977,46 @@ app.get('/api/notices', (req, res) => {
   res.json(readDb().notices);
 });
 
+app.post('/api/notices', authMiddleware, (req, res) => {
+  const body = req.body || {};
+  const title = String(body.title || '').trim();
+  const message = String(body.message || '').trim();
+  if (!title) return res.status(400).json({ error: 'Notice title is required' });
+  if (!message && !body.attachmentUrl) {
+    return res.status(400).json({ error: 'Notice message or attachment is required' });
+  }
+
+  const now = new Date().toISOString();
+  const notice = {
+    id: 'NOTICE-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex').toUpperCase(),
+    title,
+    message,
+    type: body.type || body.category || 'national',
+    category: body.category || body.type || 'national',
+    scope: body.scope === 'regional' ? 'regional' : 'national',
+    region: body.region || undefined,
+    location: body.location || undefined,
+    urgency: body.urgency || (body.urgent ? 'emergency' : 'advisory'),
+    urgent: Boolean(body.urgent),
+    reference: body.reference || undefined,
+    acknowledgeable: Boolean(body.acknowledgeable),
+    attachmentUrl: body.attachmentUrl || undefined,
+    timestamp: now,
+    publishedAt: now,
+    expiresAt: body.expiresAt || undefined,
+    status: 'published',
+    createdBy: req.officer?.badge || 'communications',
+  };
+
+  const db = readDb();
+  if (!Array.isArray(db.notices)) db.notices = [];
+  db.notices = [notice, ...db.notices];
+  writeDb(db);
+  res.status(201).json(notice);
+});
+
 // ----- Citizen mobile: Get Help (panic button with audio) -----
-function applyPanicToSession(db, body, audioUrl) {
+async function applyPanicToSession(db, body, audioFilename) {
   const lat = parseFloat(body.latitude);
   const lng = parseFloat(body.longitude);
   const existingId = body.sessionId;
@@ -835,9 +1037,7 @@ function applyPanicToSession(db, body, audioUrl) {
         });
         if (s.path.length > 500) s.path = s.path.slice(-500);
       }
-      if (!Array.isArray(s.audioUrls)) s.audioUrls = s.audioUrl ? [s.audioUrl] : [];
-      if (audioUrl && !s.audioUrls.includes(audioUrl)) s.audioUrls.push(audioUrl);
-      if (audioUrl) s.audioUrl = audioUrl;
+      Object.assign(s, citizenIdentityFromBody(body));
       s.source = body.source || s.source || 'panic_button';
       s.priority = normalizeDistressPriority(body.priority || s.priority, s.source);
       if (isFacataAlert(body, s.source)) {
@@ -847,7 +1047,7 @@ function applyPanicToSession(db, body, audioUrl) {
       if (body.callerNumber) {
         s.callerNumber = String(body.callerNumber).trim();
       }
-      writeDb(db);
+      await saveDistressDb(db);
       return {
         status: 200,
         payload: {
@@ -878,8 +1078,10 @@ function applyPanicToSession(db, body, audioUrl) {
     lastLat: Number.isFinite(lat) ? lat : null,
     lastLng: Number.isFinite(lng) ? lng : null,
     lastAccuracy: body.accuracyMeters != null ? parseFloat(body.accuracyMeters) : null,
-    audioUrl: audioUrl || null,
-    audioUrls: audioUrl ? [audioUrl] : [],
+    audioUrl: null,
+    audioUrls: [],
+    audioUploadedAt: null,
+    ...citizenIdentityFromBody(body),
     path: []
   };
   if (Number.isFinite(lat) && Number.isFinite(lng)) {
@@ -891,7 +1093,7 @@ function applyPanicToSession(db, body, audioUrl) {
     });
   }
   db.distressSessions.unshift(session);
-  writeDb(db);
+  await saveDistressDb(db);
   return {
     status: 201,
     payload: {
@@ -906,13 +1108,13 @@ function applyPanicToSession(db, body, audioUrl) {
 
 app.post('/api/citizen/emergency/panic', uploadAudio.single('audio'), async (req, res) => {
   try {
-    const stored = req.file ? await storeMulterFile(req.file, 'panic') : null;
-    const db = readDb();
-    const result = applyPanicToSession(db, req.body || {}, stored?.storageUrl || null);
+    const db = await loadDistressDb();
+    const result = await applyPanicToSession(db, req.body || {}, req.file ? req.file.filename : null);
+    if (req.file) await persistPanicAudio(result.payload.sessionId, req.file.filename);
     res.status(result.status).json(result.payload);
   } catch (err) {
-    console.error('panic upload failed', err);
-    res.status(500).json({ error: 'Could not store Get Help audio' });
+    console.error('panic multipart failed', err);
+    res.status(500).json({ error: 'Could not save Get Help audio' });
   }
 });
 
@@ -939,9 +1141,9 @@ app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), a
       Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '-panic.' + ext;
     fs.writeFileSync(path.join(UPLOADS_DIR, filename), buffer);
 
-    const stored = await storeUpload(path.join(UPLOADS_DIR, filename), `panic/${filename}`, body.mimeType || 'audio/mp4');
-    const db = readDb();
-    const result = applyPanicToSession(db, body, stored.url);
+    const db = await loadDistressDb();
+    const result = await applyPanicToSession(db, body, filename);
+    await persistPanicAudio(result.payload.sessionId, filename);
     res.status(result.status).json(result.payload);
   } catch (err) {
     console.error('panic-json failed', err);
@@ -950,7 +1152,7 @@ app.post('/api/citizen/emergency/panic-json', express.json({ limit: '25mb' }), a
 });
 
 // ----- Live distress / Get Help (legacy web citizen) -----
-app.post('/api/distress/start', (req, res) => {
+app.post('/api/distress/start', async (req, res) => {
   const body = req.body || {};
   const id = 'DIST-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex').toUpperCase();
   const lat = parseFloat(body.lat);
@@ -981,16 +1183,16 @@ app.post('/api/distress/start', (req, res) => {
       ts: new Date().toISOString()
     });
   }
-  const db = readDb();
+  const db = await loadDistressDb();
   db.distressSessions.unshift(session);
-  writeDb(db);
+  await saveDistressDb(db);
   res.status(201).json({
     sessionId: id,
     message: 'Police can now track this device. Keep app open when safe.'
   });
 });
 
-app.post('/api/distress/:id/ping', (req, res) => {
+app.post('/api/distress/:id/ping', async (req, res) => {
   const { id } = req.params;
   const { lat, lng, accuracy } = req.body || {};
   const la = parseFloat(lat);
@@ -998,7 +1200,7 @@ app.post('/api/distress/:id/ping', (req, res) => {
   if (!Number.isFinite(la) || !Number.isFinite(ln)) {
     return res.status(400).json({ error: 'lat/lng required' });
   }
-  const db = readDb();
+  const db = await loadDistressDb();
   const s = db.distressSessions.find((x) => x.id === id && x.status === 'active');
   if (!s) return res.status(404).json({ error: 'Session not active' });
   s.lastLat = la;
@@ -1007,20 +1209,20 @@ app.post('/api/distress/:id/ping', (req, res) => {
   s.lastPingAt = new Date().toISOString();
   s.path.push({ lat: la, lng: ln, accuracy: s.lastAccuracy, ts: s.lastPingAt });
   if (s.path.length > 500) s.path = s.path.slice(-500);
-  writeDb(db);
+  await saveDistressDb(db);
   res.json({ ok: true });
 });
 
-app.get('/api/distress/active', authMiddleware, (req, res) => {
-  const db = readDb();
+app.get('/api/distress/active', authMiddleware, async (req, res) => {
+  const db = await loadDistressDb();
   if (!Array.isArray(db.distressSessions)) db.distressSessions = [];
   purgeExpiredRecords(db);
   res.json(listOpenDistressSessions(db));
 });
 
 /** Debug: same data without auth — prototype only; remove in production */
-app.get('/api/distress/active-debug', (req, res) => {
-  const db = readDb();
+app.get('/api/distress/active-debug', async (req, res) => {
+  const db = await loadDistressDb();
   if (!Array.isArray(db.distressSessions)) db.distressSessions = [];
   const active = listOpenDistressSessions(db);
   res.json({
@@ -1030,20 +1232,20 @@ app.get('/api/distress/active-debug', (req, res) => {
   });
 });
 
-app.post('/api/distress/:id/end', (req, res) => {
+app.post('/api/distress/:id/end', async (req, res) => {
   const { id } = req.params;
-  const db = readDb();
+  const db = await loadDistressDb();
   const s = db.distressSessions.find((x) => x.id === id);
   if (!s) return res.status(404).json({ error: 'Not found' });
   s.status = 'ended_by_citizen';
   s.endedAt = new Date().toISOString();
-  writeDb(db);
+  await saveDistressDb(db);
   res.json({ ok: true });
 });
 
-app.get('/api/distress/:id/status', (req, res) => {
+app.get('/api/distress/:id/status', async (req, res) => {
   const { id } = req.params;
-  const db = readDb();
+  const db = await loadDistressDb();
   const s = db.distressSessions.find((x) => x.id === id);
   if (!s) return res.status(404).json({ error: 'Not found' });
   res.json({
@@ -1055,10 +1257,10 @@ app.get('/api/distress/:id/status', (req, res) => {
   });
 });
 
-app.patch('/api/distress/:id', authMiddleware, (req, res) => {
+app.patch('/api/distress/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
   const { status, assignment } = req.body || {};
-  const db = readDb();
+  const db = await loadDistressDb();
   const s = db.distressSessions.find((x) => x.id === id);
   if (!s) return res.status(404).json({ error: 'Not found' });
 
@@ -1078,6 +1280,9 @@ app.patch('/api/distress/:id', authMiddleware, (req, res) => {
         assignedBy: req.officer ? req.officer.badge : 'dispatch',
         note: String(assignment.note || '')
       };
+      // Assigned incidents leave the unassigned live queue immediately.
+      s.status = 'assigned';
+      s.assignedAt = new Date().toISOString();
     }
   }
 
@@ -1091,7 +1296,7 @@ app.patch('/api/distress/:id', authMiddleware, (req, res) => {
       s.acknowledgedBy = req.officer.badge;
     }
   }
-  writeDb(db);
+  await saveDistressDb(db);
   res.json(s);
 });
 
@@ -1163,48 +1368,38 @@ app.get('/', (req, res) => {
   );
 });
 
-async function startServer() {
-  ensureDb();
-  await hydrateDbFromSupabase();
-  await ensureSupabaseStorage();
+ensureDb();
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log('API: http://localhost:' + PORT + '/');
+  console.log('Citizen app: run Expo in citizen-mobile/ (points EXPO_PUBLIC_API_URL at this API)');
+  console.log('Admin dashboard (dev): http://localhost:5174 — username MELU101 / Melu123!');
+  if (fs.existsSync(commsAdminDir)) {
+    console.log('Admin (built): http://localhost:' + PORT + '/communications/');
+  } else {
+    console.log('Admin (built): run "npm run admin:build" then restart — or "npm run admin:dev"');
+  }
 
-  const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log('API: http://localhost:' + PORT + '/');
-    console.log('Citizen app: run Expo in citizen-mobile/ (points EXPO_PUBLIC_API_URL at this API)');
-    console.log('Admin dashboard (dev): http://localhost:5174 — username MELU101 / Melu123!');
-    if (fs.existsSync(commsAdminDir)) {
-      console.log('Admin (built): http://localhost:' + PORT + '/communications/');
-    } else {
-      console.log('Admin (built): run "npm run admin:build" then restart — or "npm run admin:dev"');
-    }
-
-    // Auto-remove expired reports / closed live alerts on a schedule.
+  // Auto-remove expired reports / closed live alerts on a schedule.
+  try {
+    purgeExpiredRecords(readDb());
+  } catch (err) {
+    console.error('Initial retention purge failed', err);
+  }
+  setInterval(() => {
     try {
       purgeExpiredRecords(readDb());
     } catch (err) {
-      console.error('Initial retention purge failed', err);
+      console.error('Retention purge failed', err);
     }
-    setInterval(() => {
-      try {
-        purgeExpiredRecords(readDb());
-      } catch (err) {
-        console.error('Retention purge failed', err);
-      }
-    }, 60 * 60 * 1000);
-  });
+  }, 60 * 60 * 1000);
+});
 
-  server.on('error', (err) => {
-    if (err && err.code === 'EADDRINUSE') {
-      console.error('Port ' + PORT + ' is already in use.');
-      console.error('Close the other server process or run with a different port (e.g. set PORT=3001).');
-      process.exit(1);
-      return;
-    }
-    throw err;
-  });
-}
-
-startServer().catch((err) => {
-  console.error('Backend startup failed:', err.message || err);
-  process.exit(1);
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error('Port ' + PORT + ' is already in use.');
+    console.error('Close the other server process or run with a different port (e.g. set PORT=3001).');
+    process.exit(1);
+    return;
+  }
+  throw err;
 });

@@ -24,6 +24,7 @@ function noticeToForm(notice: ReturnType<typeof useNotices>['notices'][0]): Noti
     reference: notice.reference,
     acknowledgeable: notice.acknowledgeable,
     expiresAt: notice.expiresAt,
+    attachmentUrl: notice.attachmentUrl,
     actions: notice.actions,
   };
 }
@@ -50,6 +51,7 @@ export function NoticeEditPage() {
   const [form, setForm] = useState<NoticeFormData>(() =>
     existing ? noticeToForm(existing) : emptyForm(),
   );
+  const [publishMessage, setPublishMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (existing) setForm(noticeToForm(existing));
@@ -92,6 +94,7 @@ export function NoticeEditPage() {
   };
 
   const publish = async () => {
+    setPublishMessage(null);
     if (!form.title.trim()) {
       alert('Title is required.');
       return;
@@ -108,6 +111,8 @@ export function NoticeEditPage() {
         alert(
           'Saved in this browser, but could not reach the police server. Run npm start in the POLICE APP folder, then publish again.',
         );
+      } else {
+        setPublishMessage('Published to the citizen app.');
       }
       navigate(`/notices/${newId}`);
       return;
@@ -120,6 +125,8 @@ export function NoticeEditPage() {
         alert(
           'Updated locally, but could not reach the police server. Run npm start in the POLICE APP folder, then publish again.',
         );
+      } else {
+        setPublishMessage('Published to the citizen app.');
       }
     }
   };
@@ -153,6 +160,7 @@ export function NoticeEditPage() {
           </span>
         </div>
       ) : null}
+      {publishMessage ? <div className="notice-publish-success" role="status">{publishMessage}</div> : null}
 
       <div className="edit-layout">
         <div className="panel">

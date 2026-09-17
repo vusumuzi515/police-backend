@@ -56,9 +56,31 @@ export function alertKindLabel(session: DistressSession): string {
 
 export function sortDistressSessions(sessions: DistressSession[]): DistressSession[] {
   return [...sessions].sort((a, b) => {
+    const audioTimeA = new Date(a.audioUploadedAt || a.startedAt).getTime();
+    const audioTimeB = new Date(b.audioUploadedAt || b.startedAt).getTime();
+    if (audioTimeA !== audioTimeB) return audioTimeB - audioTimeA;
     const ua = isSessionUrgent(a) ? 0 : 1;
     const ub = isSessionUrgent(b) ? 0 : 1;
     if (ua !== ub) return ua - ub;
     return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime();
   });
+}
+
+export function recentDistinctAudioUrls(session: DistressSession, limit = 6): string[] {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  const records = session.audioRecords?.length
+    ? session.audioRecords.filter((record) => {
+        const uploadedAt = record.uploadedAt ? new Date(record.uploadedAt).getTime() : NaN;
+        return record.url && Number.isFinite(uploadedAt) && uploadedAt > cutoff;
+      })
+    : [];
+  if (records.length) {
+    return [...new Set(records.map((record) => record.url))].slice(-limit).reverse();
+  }
+
+  const fallbackTimestamp = session.audioUploadedAt || session.startedAt;
+  const fallbackTime = new Date(fallbackTimestamp).getTime();
+  if (!Number.isFinite(fallbackTime) || fallbackTime <= cutoff) return [];
+  const urls = session.audioUrls?.length ? session.audioUrls : session.audioUrl ? [session.audioUrl] : [];
+  return [...new Set(urls)].slice(-limit).reverse();
 }

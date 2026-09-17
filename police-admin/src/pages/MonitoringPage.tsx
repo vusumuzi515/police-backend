@@ -12,6 +12,7 @@ import {
   isFacataSession,
   isSessionUrgent,
   isSignalStale,
+  recentDistinctAudioUrls,
   sourceLabel,
 } from '../utils/distressSession';
 
@@ -195,6 +196,14 @@ export function MonitoringPage() {
               {selected.callerNumber ? (
                 <span className="map-incident-caller">Call: {selected.callerNumber}</span>
               ) : null}
+              {selected.reporterName || selected.reporterPhone || selected.reporterEmail || selected.nationalId ? (
+                <span className="map-incident-caller">
+                  Citizen: {selected.reporterName || 'Account holder'}
+                  {selected.reporterPhone ? ` · ${selected.reporterPhone}` : ''}
+                  {selected.reporterEmail ? ` · ${selected.reporterEmail}` : ''}
+                  {selected.nationalId ? ` · ID ${selected.nationalId}` : ''}
+                </span>
+              ) : null}
               {isFacataSession(selected) && selected.callAnswered ? (
                 <span className="map-incident-facata-flag">Phone call answered</span>
               ) : null}
@@ -215,7 +224,7 @@ export function MonitoringPage() {
                   Open directions
                 </a>
               ) : null}
-              {(selected.audioUrls?.length ? selected.audioUrls : selected.audioUrl ? [selected.audioUrl] : []).map((audioUrl, index) => (
+              {recentDistinctAudioUrls(selected).map((audioUrl, index) => (
                 <DistressAudioPlayer
                   key={audioUrl}
                   audioUrl={audioUrl}
