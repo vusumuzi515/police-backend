@@ -194,6 +194,11 @@ export interface CitizenReport {
   anonymous: boolean;
   submittedFields?: { label: string; value: string }[];
   evidenceFiles?: EvidenceFile[];
+  assignedOfficer?: {
+    name: string;
+    badge?: string;
+    unit?: string;
+  };
 }
 
 const REPORT_LABELS: Record<string, string> = {
@@ -223,6 +228,7 @@ interface ServerReport {
   status: string;
   timestamp: string;
   closedAt?: string;
+  assignedOfficer?: CitizenReport['assignedOfficer'];
   payload?: {
     details?: string;
     information?: string;
@@ -286,6 +292,11 @@ function normalizeSubmittedFields(payload: ServerReport['payload']): { label: st
 
 export function normalizeReport(raw: ServerReport): CitizenReport {
   const p = raw.payload ?? {};
+  const identity = (p as { identity?: Record<string, unknown> }).identity ?? {};
+  const field = (name: string): string | undefined => {
+    const value = p[name] ?? identity[name] ?? (raw as unknown as Record<string, unknown>)[name];
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  };
   const anon = p.anonymous === true || p.anonymous === 'true' || raw.type === 'anonymous';
   const type = REPORT_TYPE_ALIASES[raw.type] ?? raw.type;
   const reportTitle =
@@ -300,16 +311,17 @@ export function normalizeReport(raw: ServerReport): CitizenReport {
     status: raw.status || 'new',
     timestamp: raw.timestamp || new Date().toISOString(),
     closedAt: typeof raw.closedAt === 'string' ? raw.closedAt : undefined,
-    phone: anon ? undefined : (typeof p.phone === 'string' ? p.phone : undefined),
-    reporterName: anon ? undefined : (typeof (p as { reporterName?: string }).reporterName === 'string' ? (p as { reporterName?: string }).reporterName : undefined),
-    nationalId: anon ? undefined : (typeof (p as { nationalId?: string }).nationalId === 'string' ? (p as { nationalId?: string }).nationalId : undefined),
-    reporterPhone: anon ? undefined : (typeof (p as { reporterPhone?: string }).reporterPhone === 'string' ? (p as { reporterPhone?: string }).reporterPhone : undefined),
-    reporterEmail: anon ? undefined : (typeof (p as { reporterEmail?: string }).reporterEmail === 'string' ? (p as { reporterEmail?: string }).reporterEmail : undefined),
+    phone: anon ? undefined : (field('phone') ?? field('reporterPhone')),
+    reporterName: anon ? undefined : field('reporterName'),
+    nationalId: anon ? undefined : field('nationalId'),
+    reporterPhone: anon ? undefined : (field('reporterPhone') ?? field('phone')),
+    reporterEmail: anon ? undefined : field('reporterEmail'),
     location: anon ? undefined : normalizeReportLocation(p.location),
     numberPlate: typeof p.numberPlate === 'string' ? p.numberPlate : undefined,
     anonymous: anon,
     submittedFields: normalizeSubmittedFields(p),
     evidenceFiles: Array.isArray(p.evidenceFiles) ? p.evidenceFiles : undefined,
+    assignedOfficer: raw.assignedOfficer ?? (p as { assignedOfficer?: CitizenReport['assignedOfficer'] }).assignedOfficer,
   };
 }
 
@@ -392,6 +404,27 @@ export async function updateReportStatus(id: string, status: string): Promise<bo
       method: 'PATCH',
       headers: authHeaders(),
       body: JSON.stringify({ status }),
+    });
+    if (!res.ok) return false;
+    clearApiCache();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function assignReport(
+  id: string,
+  assignment: { name: string; badge?: string; unit?: string },
+): Promise<boolean> {
+  const token = getAuthToken();
+  if (!token || !assignment.name.trim()) return false;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/reports/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: authHeaders(),
+      body: JSON.stringify({ assignment }),
     });
     if (!res.ok) return false;
     clearApiCache();

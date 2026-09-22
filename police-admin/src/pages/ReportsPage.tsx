@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { useReportsInbox } from '../hooks/useReportsInbox';
@@ -112,11 +112,16 @@ function ReportInboxItem({
         </span>
       </div>
       <p className="inbox-item-preview">{reportPreviewLine(report)}</p>
-      <span className="inbox-item-time">
-        {showSolvedTime
-          ? `Solved ${formatRelativeTime(reportSolvedAt(report))}`
-          : formatRelativeTime(report.timestamp)}
-      </span>
+      <div className="case-item-meta">
+        <span>{report.anonymous ? 'Anonymous' : (report.reporterName || 'Named citizen')}</span>
+        <span>{report.nationalId ? `ID ${report.nationalId}` : 'No ID shown'}</span>
+        <span>{report.assignedOfficer ? `Assigned: ${report.assignedOfficer.name}` : 'Unassigned'}</span>
+        <span className="inbox-item-time">
+          {showSolvedTime
+            ? `Solved ${formatRelativeTime(reportSolvedAt(report))}`
+            : formatRelativeTime(report.timestamp)}
+        </span>
+      </div>
     </button>
   );
 }
@@ -124,11 +129,13 @@ function ReportInboxItem({
 function ReportDetailView({
   report,
   onSetStatus,
+  onAssign,
   onBackToFolder,
   busy,
 }: {
   report: CitizenReport;
   onSetStatus: (id: string, status: string) => Promise<boolean>;
+  onAssign: (id: string, assignment: { name: string; badge?: string; unit?: string }) => Promise<boolean>;
   onBackToFolder: () => void;
   busy: boolean;
 }) {
@@ -136,6 +143,21 @@ function ReportDetailView({
   const mapLink = mapsUrl(report.location);
   const dialLink = phoneDialUrl(report.phone);
   const showAssist = !isReportClosed(report.status) && report.type !== 'emergency';
+  const [officerName, setOfficerName] = useState(report.assignedOfficer?.name || '');
+  const [officerBadge, setOfficerBadge] = useState(report.assignedOfficer?.badge || '');
+  const [officerUnit, setOfficerUnit] = useState(report.assignedOfficer?.unit || '');
+  const [assignmentMessage, setAssignmentMessage] = useState<string | null>(null);
+
+  const submitAssignment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setAssignmentMessage(null);
+    const ok = await onAssign(report.id, {
+      name: officerName,
+      badge: officerBadge,
+      unit: officerUnit,
+    });
+    setAssignmentMessage(ok ? 'Case assigned' : 'Could not assign case');
+  };
 
   return (
     <div className="report-detail-inner">
@@ -162,24 +184,6 @@ function ReportDetailView({
             <p className="report-assist-inline">{meta.assist}</p>
           </div>
         ) : null}
-
-        <section className="report-detail-section">
-          <h4 className="detail-section-title">Incident details</h4>
-          <p className="detail-message">{report.message || '—'}</p>
-          {report.numberPlate ? (
-            <p className="detail-field-line"><span>Number plate</span>{report.numberPlate}</p>
-          ) : null}
-          {report.submittedFields?.length ? (
-            <dl className="submitted-fields">
-              {report.submittedFields.map((field) => (
-                <div key={field.label} className="submitted-field">
-                  <dt>{field.label}</dt>
-                  <dd>{field.value}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : null}
-        </section>
 
         {!report.anonymous && (report.reporterName || report.nationalId || report.reporterEmail || report.phone || report.location) ? (
           <section className="report-detail-section">
@@ -224,14 +228,48 @@ function ReportDetailView({
           </section>
         ) : null}
 
+        {!isReportClosed(report.status) ? (
+          <section className="report-detail-section case-assignment-section">
+            <div className="case-assignment-heading">
+              <h4 className="detail-section-title">Case assignment</h4>
+              {report.assignedOfficer ? <span className="case-assigned-note">Currently assigned</span> : null}
+            </div>
+            <form className="case-assignment-form" onSubmit={(event) => void submitAssignment(event)}>
+              <input value={officerName} onChange={(event) => setOfficerName(event.target.value)} placeholder="Officer name" aria-label="Officer name" required />
+              <input value={officerBadge} onChange={(event) => setOfficerBadge(event.target.value)} placeholder="Badge" aria-label="Officer badge" />
+              <input value={officerUnit} onChange={(event) => setOfficerUnit(event.target.value)} placeholder="Unit or station" aria-label="Officer unit or station" />
+              <button type="submit" className="btn btn-primary" disabled={busy}>Assign case</button>
+            </form>
+            {assignmentMessage ? <p className="case-assignment-message" role="status">{assignmentMessage}</p> : null}
+          </section>
+        ) : null}
+
+        <section className="report-detail-section">
+          <h4 className="detail-section-title">Incident details</h4>
+          <p className="detail-message">{report.message || '—'}</p>
+          {report.numberPlate ? (
+            <p className="detail-field-line"><span>Number plate</span>{report.numberPlate}</p>
+          ) : null}
+          {report.submittedFields?.length ? (
+            <dl className="submitted-fields">
+              {report.submittedFields.map((field) => (
+                <div key={field.label} className="submitted-field">
+                  <dt>{field.label}</dt>
+                  <dd>{field.value}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
+        </section>
+
         {report.evidenceFiles && report.evidenceFiles.length > 0 ? (
           <section className="report-detail-section">
             <h4 className="detail-section-title">Evidence <span className="detail-section-count">{report.evidenceFiles.length} file{report.evidenceFiles.length === 1 ? '' : 's'}</span></h4>
             <div className="evidence-gallery">
               {report.evidenceFiles.map((f) => {
                 const url = mediaUrl(f.url);
-                const image = isImageEvidence(f.type);
-                const video = isVideoEvidence(f.type);
+                const image = isImageEvidence(f.type || f.name || f.url);
+                const video = isVideoEvidence(f.type, f.name || f.url);
                 return (
                   <div key={f.url} className="evidence-tile">
                     {image ? (
@@ -239,7 +277,10 @@ function ReportDetailView({
                         <img src={url} alt="" className="evidence-thumb" />
                       </a>
                     ) : video ? (
-                      <video src={url} controls className="evidence-thumb" />
+                      <video controls preload="metadata" className="evidence-thumb">
+                        <source src={url} type={f.type || undefined} />
+                        Your browser cannot play this video. <a href={url} target="_blank" rel="noreferrer">Download the evidence</a>.
+                      </video>
                     ) : (
                       <a href={url} target="_blank" rel="noreferrer" className="evidence-file-link">
                         {f.name || 'Evidence'}
@@ -298,6 +339,7 @@ function ReportsWorkspace({
   onBack,
   onSelect,
   onSetStatus,
+  onAssign,
   actionBusy,
   statusTabs,
   statusFilter,
@@ -314,6 +356,7 @@ function ReportsWorkspace({
   onBack: () => void;
   onSelect: (id: string) => void;
   onSetStatus: (id: string, status: string) => Promise<boolean>;
+  onAssign: (id: string, assignment: { name: string; badge?: string; unit?: string }) => Promise<boolean>;
   actionBusy: boolean;
   statusTabs?: { id: StatusFilter; label: string }[];
   statusFilter?: StatusFilter;
@@ -387,6 +430,7 @@ function ReportsWorkspace({
               report={selected}
               busy={actionBusy}
               onSetStatus={onSetStatus}
+              onAssign={onAssign}
               onBackToFolder={() => onSelect('')}
             />
           ) : (
@@ -414,7 +458,7 @@ function CasesFolderEntry({ count, onOpen }: { count: number; onOpen: () => void
 }
 
 export function ReportsPage() {
-  const { reports, loading, refresh, setStatus } = useReportsInbox();
+  const { reports, loading, refresh, setStatus, assign } = useReportsInbox();
   const [homeView, setHomeView] = useState<HomeView>('categories');
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [caseContentsOpen, setCaseContentsOpen] = useState(false);
@@ -552,6 +596,7 @@ export function ReportsPage() {
           onBack={goHome}
           onSelect={setSelectedId}
           onSetStatus={handleSetStatus}
+          onAssign={assign}
           actionBusy={actionBusy}
           showSolvedTime
         />
@@ -582,6 +627,7 @@ export function ReportsPage() {
           onBack={() => setCaseContentsOpen(false)}
           onSelect={setSelectedId}
           onSetStatus={handleSetStatus}
+          onAssign={assign}
           actionBusy={actionBusy}
         />
       ) : null}

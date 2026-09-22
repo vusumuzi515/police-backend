@@ -226,9 +226,12 @@ export function countByStatus(reports: CitizenReport[], status: string): number 
 }
 
 export function isImageEvidence(type?: string): boolean {
-  return !!type && type.startsWith('image/');
+  return !!type && (type.toLowerCase().startsWith('image/') || /\.(jpe?g|png|gif|webp|heic)(?:$|\?)/i.test(type));
 }
 
-export function isVideoEvidence(type?: string): boolean {
-  return !!type && type.startsWith('video/');
+export function isVideoEvidence(type?: string, nameOrUrl?: string): boolean {
+  return Boolean(
+    (type && type.toLowerCase().startsWith('video/')) ||
+      (nameOrUrl && /\.(mp4|mov|m4v|webm|3gp)(?:$|\?)/i.test(nameOrUrl)),
+  );
 }

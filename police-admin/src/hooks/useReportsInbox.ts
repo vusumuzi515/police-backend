@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CitizenReport } from '../services/api';
-import { fetchReports, updateReportStatus } from '../services/api';
+import { assignReport, fetchReports, updateReportStatus } from '../services/api';
 
 export function useReportsInbox() {
   const [reports, setReports] = useState<CitizenReport[]>([]);
@@ -32,5 +32,11 @@ export function useReportsInbox() {
     return ok;
   }, [load]);
 
-  return { reports, loading, refresh: load, setStatus };
+  const assign = useCallback(async (id: string, assignment: { name: string; badge?: string; unit?: string }) => {
+    const ok = await assignReport(id, assignment);
+    if (ok) await load(true);
+    return ok;
+  }, [load]);
+
+  return { reports, loading, refresh: load, setStatus, assign };
 }

@@ -37,7 +37,8 @@ console.log('==============================');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+// Reports can include base64 photo/video evidence in the JSON fallback path.
+app.use(express.json({ limit: '100mb' }));
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use('/uploads', express.static(UPLOADS_DIR));
 
@@ -222,7 +223,23 @@ async function fetchReportsFromSupabase() {
       console.error('Supabase fetch reports error:', result.error);
       return null;
     }
-    return result.data || [];
+    const reports = result.data || [];
+    for (const report of reports) {
+      const files = report?.payload?.evidenceFiles;
+      if (!Array.isArray(files)) continue;
+      for (const file of files) {
+        if (!file || !file.storedName) continue;
+        try {
+          const signed = await supabase.storage
+            .from('evidence')
+            .createSignedUrl(file.storedName, 60 * 60);
+          if (!signed.error && signed.data?.signedUrl) file.url = signed.data.signedUrl;
+        } catch (err) {
+          console.error('Supabase evidence URL error:', err.message);
+        }
+      }
+    }
+    return reports;
   } catch (err) {
     console.error('Supabase fetch reports exception:', err);
     return null;
@@ -249,6 +266,28 @@ async function createReportInSupabase(report) {
   } catch (err) {
     console.error('🔴 [createReportInSupabase] EXCEPTION:', err.message);
     return null;
+  }
+}
+
+async function updateReportInSupabase(report) {
+  if (!USE_SUPABASE) return true;
+  try {
+    const { error } = await supabase
+      .from('reports')
+      .update({
+        status: report.status,
+        closedAt: report.closedAt || null,
+        payload: report.payload || {},
+      })
+      .eq('id', report.id);
+    if (error) {
+      console.error('Supabase update report error:', error);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('Supabase update report exception:', err.message);
+    return false;
   }
 }
 
@@ -826,6 +865,10 @@ async function createCitizenReport(body, files) {
     }
   };
   const payload = { ...body };
+  const identity = payload.identity && typeof payload.identity === 'object' ? payload.identity : {};
+  for (const field of ['reporterName', 'nationalId', 'reporterPhone', 'reporterEmail']) {
+    if (!payload[field] && identity[field]) payload[field] = String(identity[field]).trim();
+  }
   if (typeof payload.anonymous === 'string') {
     payload.anonymous = payload.anonymous === 'true';
   }
@@ -957,9 +1000,9 @@ app.patch('/api/settings', authMiddleware, (req, res) => {
   });
 });
 
-app.patch('/api/reports/:id', authMiddleware, (req, res) => {
+app.patch('/api/reports/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
-  const { status } = req.body || {};
+  const { status, assignment } = req.body || {};
   const db = readDb();
   const r = db.reports.find((x) => x.id === id);
   if (!r) return res.status(404).json({ error: 'Not found' });
@@ -969,6 +1012,25 @@ app.patch('/api/reports/:id', authMiddleware, (req, res) => {
       r.closedAt = new Date().toISOString();
     }
   }
+  if (assignment && typeof assignment === 'object') {
+    const name = String(assignment.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Officer name is required' });
+    r.assignedOfficer = {
+      name,
+      badge: String(assignment.badge || '').trim(),
+      unit: String(assignment.unit || '').trim(),
+    };
+    r.assignedAt = new Date().toISOString();
+    r.assignedBy = req.officer?.badge || 'communications';
+    r.payload = {
+      ...(r.payload || {}),
+      assignedOfficer: r.assignedOfficer,
+      assignedAt: r.assignedAt,
+      assignedBy: r.assignedBy,
+    };
+    if (r.status === 'new') r.status = 'reviewing';
+  }
+  await updateReportInSupabase(r);
   writeDb(db);
   res.json(r);
 });
