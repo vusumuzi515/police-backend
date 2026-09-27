@@ -31,7 +31,8 @@ test('Netlify API login stores the initial officer and session in Supabase state
   });
 
   await new Promise((resolve) => mockSupabase.listen(0, '127.0.0.1', resolve));
-  process.env.NETLIFY = 'true';
+  delete process.env.NETLIFY;
+  process.env.AWS_LAMBDA_FUNCTION_NAME = 'netlify-api-test';
   process.env.TEMP = 'D:\\';
   process.env.TMP = 'D:\\';
   process.env.SUPABASE_URL = `http://127.0.0.1:${mockSupabase.address().port}`;

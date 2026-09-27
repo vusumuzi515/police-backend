@@ -18,10 +18,10 @@ const { createClient } = require('@supabase/supabase-js');
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'prototype-db.json');
-const UPLOADS_DIR = process.env.NETLIFY
+const IS_NETLIFY = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const UPLOADS_DIR = IS_NETLIFY
   ? path.join(os.tmpdir(), 'police-uploads')
   : path.join(__dirname, 'uploads');
-const IS_NETLIFY = Boolean(process.env.NETLIFY);
 const NETLIFY_STATE_ID = 'main';
 let netlifyDbState = null;
 let netlifyDbDirty = false;
@@ -1599,7 +1599,7 @@ app.get('/', (req, res) => {
   );
 });
 
-if (!process.env.NETLIFY) {
+if (!IS_NETLIFY) {
   ensureDb();
   const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('API: http://localhost:' + PORT + '/');
