@@ -1,5 +1,5 @@
 [build]
-command = "npm install && VITE_API_URL=/ npm run admin:build"
+command = "npm install && npm install --prefix police-admin && VITE_API_URL=/ npm run admin:build"
 publish = "police-admin/dist"
 functions = "netlify/functions"
 
