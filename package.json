@@ -8,12 +8,14 @@
   "scripts": {
     "start": "node server.js",
     "admin:dev": "npm run dev --prefix police-admin",
-    "admin:build": "npm run build --prefix police-admin"
+    "admin:build": "npm run build --prefix police-admin",
+    "test:netlify": "node --test ./test/netlify-function.test.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.43.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
-    "multer": "^2.1.1"
+    "multer": "^2.1.1",
+    "serverless-http": "^4.0.0"
   }
 }

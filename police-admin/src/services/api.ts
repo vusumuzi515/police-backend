@@ -1,5 +1,9 @@
-export const API_BASE =
-  import.meta.env.VITE_API_URL?.replace(/\/$/, '') || 'http://localhost:3000';
+const configuredApiBase = import.meta.env.VITE_API_URL?.trim();
+export const API_BASE = configuredApiBase
+  ? configuredApiBase.replace(/\/$/, '')
+  : import.meta.env.DEV
+    ? 'http://localhost:3000'
+    : '';
 
 const API_CACHE_PREFIX = 'police-admin-api-cache:';
 const apiCache = new Map<string, { value: unknown; expiresAt: number }>();

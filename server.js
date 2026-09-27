@@ -10,6 +10,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
@@ -17,7 +18,13 @@ const { createClient } = require('@supabase/supabase-js');
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'prototype-db.json');
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const UPLOADS_DIR = process.env.NETLIFY
+  ? path.join(os.tmpdir(), 'police-uploads')
+  : path.join(__dirname, 'uploads');
+const IS_NETLIFY = Boolean(process.env.NETLIFY);
+const NETLIFY_STATE_ID = 'main';
+let netlifyDbState = null;
+let netlifyDbDirty = false;
 
 // Supabase client
 const SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
@@ -30,17 +37,134 @@ const USE_SUPABASE = supabase !== null;
 
 // Debug: Log Supabase configuration on startup
 console.log('=== SUPABASE CONFIGURATION ===');
-console.log('SUPABASE_URL:', SUPABASE_URL ? 'SET (' + SUPABASE_URL.substring(0, 30) + '...)' : 'NOT SET');
-console.log('SUPABASE_SERVICE_KEY:', SUPABASE_SERVICE_KEY ? 'SET (' + SUPABASE_SERVICE_KEY.substring(0, 20) + '...)' : 'NOT SET');
+console.log('SUPABASE_URL:', SUPABASE_URL ? 'SET' : 'NOT SET');
+console.log('SUPABASE_SERVICE_KEY:', SUPABASE_SERVICE_KEY ? 'SET' : 'NOT SET');
 console.log('USE_SUPABASE (client initialized):', USE_SUPABASE);
 console.log('==============================');
 
 const app = express();
 app.use(cors());
-// Reports can include base64 photo/video evidence in the JSON fallback path.
-app.use(express.json({ limit: '100mb' }));
+// Netlify Functions have a smaller request payload limit than the long-running server.
+app.use(express.json({ limit: IS_NETLIFY ? '4mb' : '100mb' }));
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use('/uploads', express.static(UPLOADS_DIR));
+
+function initialDbState() {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const passwordHash = crypto.pbkdf2Sync('Melu123!', salt, 100000, 32, 'sha256').toString('hex');
+  return {
+    officers: [{ badge: 'MELU101', name: 'Command Center Admin', rank: 'Command Center Admin', salt, passwordHash }],
+    reports: [],
+    notices: [],
+    distressSessions: [],
+    loginAttempts: {},
+    sessions: {},
+    citizens: [],
+    citizenOtps: {},
+    citizenSessions: {},
+    settings: normalizeSettings(null),
+  };
+}
+
+async function acquireNetlifyStateLock(owner) {
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    const { data, error } = await supabase.rpc('police_app_state_acquire_lock', {
+      p_owner: owner,
+      p_ttl_seconds: 45,
+    });
+    if (error) throw error;
+    if (data === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error('Timed out waiting for the Supabase app-state lock');
+}
+
+async function releaseNetlifyStateLock(owner) {
+  const { error } = await supabase.rpc('police_app_state_release_lock', { p_owner: owner });
+  if (error) throw error;
+}
+
+app.use('/api', async (req, res, next) => {
+  if (!IS_NETLIFY) return next();
+  if (!USE_SUPABASE) return res.status(503).json({ error: 'Supabase backend is not configured' });
+
+  const owner = crypto.randomUUID();
+  try {
+    await acquireNetlifyStateLock(owner);
+    let { data, error } = await supabase
+      .from('police_app_state')
+      .select('state')
+      .eq('id', NETLIFY_STATE_ID)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
+      const inserted = await supabase
+        .from('police_app_state')
+        .insert({ id: NETLIFY_STATE_ID, state: initialDbState() })
+        .select('state')
+        .single();
+      if (inserted.error) throw inserted.error;
+      data = inserted.data;
+    }
+
+    netlifyDbState = data.state && Object.keys(data.state).length ? data.state : initialDbState();
+    netlifyDbDirty = !data.state || !Object.keys(data.state).length;
+    netlifyDbState.reports ||= [];
+    netlifyDbState.notices ||= [];
+    netlifyDbState.distressSessions ||= [];
+    if (!Array.isArray(netlifyDbState.officers) || !netlifyDbState.officers.length) {
+      netlifyDbState.officers = initialDbState().officers;
+      netlifyDbDirty = true;
+    }
+    netlifyDbState.loginAttempts ||= {};
+    netlifyDbState.sessions ||= {};
+    netlifyDbState.citizens ||= [];
+    netlifyDbState.citizenOtps ||= {};
+    netlifyDbState.citizenSessions ||= {};
+    netlifyDbState.settings = normalizeSettings(netlifyDbState.settings);
+    netlifyDbDirty = netlifyDbDirty || !data.state?.settings;
+
+    const originalEnd = res.end.bind(res);
+    let ended = false;
+    res.end = (...args) => {
+      if (ended) return res;
+      ended = true;
+      Promise.resolve()
+        .then(async () => {
+          if (netlifyDbDirty) {
+            const saved = await supabase
+              .from('police_app_state')
+              .update({ state: netlifyDbState, updated_at: new Date().toISOString() })
+              .eq('id', NETLIFY_STATE_ID)
+              .eq('lock_owner', owner)
+              .select('id')
+              .maybeSingle();
+            if (saved.error || !saved.data) throw saved.error || new Error('Lost Supabase state lock');
+          }
+          await releaseNetlifyStateLock(owner);
+          originalEnd(...args);
+        })
+        .catch(async (saveError) => {
+          console.error('Netlify Supabase state persistence failed:', saveError);
+          try { await releaseNetlifyStateLock(owner); } catch (releaseError) {
+            console.error('Could not release Supabase app-state lock:', releaseError);
+          }
+          if (!res.headersSent) {
+            res.statusCode = 503;
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          }
+          originalEnd(JSON.stringify({ error: 'Could not persist application state' }));
+        });
+      return res;
+    };
+    next();
+  } catch (error) {
+    console.error('Could not load Netlify Supabase state:', error);
+    try { await releaseNetlifyStateLock(owner); } catch { /* lock may not have been acquired */ }
+    res.status(503).json({ error: 'Could not load application state from Supabase' });
+  }
+});
 
 const evidenceStorage = multer.diskStorage({
   destination: function (_req, _file, cb) {
@@ -53,14 +177,15 @@ const evidenceStorage = multer.diskStorage({
 });
 const uploadEvidence = multer({
   storage: evidenceStorage,
-  limits: { fileSize: 80 * 1024 * 1024 },
+  limits: { fileSize: IS_NETLIFY ? 4 * 1024 * 1024 : 80 * 1024 * 1024 },
 });
 const uploadAudio = multer({
   storage: evidenceStorage,
-  limits: { fileSize: 80 * 1024 * 1024 },
+  limits: { fileSize: IS_NETLIFY ? 4 * 1024 * 1024 : 80 * 1024 * 1024 },
 });
 
 function ensureDb() {
+  if (IS_NETLIFY) return;
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   const defaultUsername = 'MELU101';
   const defaultPassword = 'Melu123!';
@@ -115,6 +240,10 @@ function ensureDb() {
 }
 
 function readDb() {
+  if (IS_NETLIFY) {
+    if (!netlifyDbState) throw new Error('Supabase app state was not loaded for this request');
+    return netlifyDbState;
+  }
   ensureDb();
   const db = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
   if (!Array.isArray(db.distressSessions)) db.distressSessions = [];
@@ -125,6 +254,11 @@ function readDb() {
 
 function writeDb(db) {
   db.settings = normalizeSettings(db.settings);
+  if (IS_NETLIFY) {
+    netlifyDbState = db;
+    netlifyDbDirty = true;
+    return;
+  }
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
 }
 
@@ -337,29 +471,35 @@ async function persistPanicAudio(sessionId, filename) {
         filename.endsWith('.wav') ? 'audio/wav' : 'audio/mp4',
       );
     }
+    if (IS_NETLIFY && !uploadedPath) {
+      throw new Error('Could not persist Get Help audio to Supabase Storage');
+    }
     const db = await loadDistressDb();
     const session = db.distressSessions.find((item) => item.id === sessionId);
     if (!session) return false;
     const audioUrl = uploadedPath
       ? getSupabaseStorageUrl('evidence', uploadedPath)
-      : `/uploads/${filename}`;
+      : IS_NETLIFY
+        ? null
+        : `/uploads/${filename}`;
     const audioUploadedAt = new Date().toISOString();
     const audioRecords = Array.isArray(session.audioRecords) ? session.audioRecords : [];
-    if (!audioRecords.some((record) => record && record.url === audioUrl)) {
+    if (audioUrl && !audioRecords.some((record) => record && record.url === audioUrl)) {
       audioRecords.push({ url: audioUrl, uploadedAt: audioUploadedAt });
     }
     session.audioRecords = audioRecords;
     const audioUrls = Array.isArray(session.audioUrls) ? session.audioUrls : [];
-    if (!audioUrls.includes(audioUrl)) audioUrls.push(audioUrl);
+    if (audioUrl && !audioUrls.includes(audioUrl)) audioUrls.push(audioUrl);
     session.audioUrls = audioUrls;
     session.audioUrl = audioUrl;
     session.audioUploadedAt = audioUploadedAt;
     session.audioStoragePath = uploadedPath || null;
-    session.audioStorage = uploadedPath ? 'supabase' : 'local-fallback';
+    session.audioStorage = uploadedPath ? 'supabase' : IS_NETLIFY ? 'unavailable' : 'local-fallback';
     await saveDistressDb(db);
     return Boolean(uploadedPath);
   } catch (err) {
     console.error('Could not persist Get Help audio to Supabase Storage:', err);
+    if (IS_NETLIFY) throw err;
     return false;
   }
 }
@@ -833,23 +973,35 @@ app.post('/api/reports/json', express.json({ limit: '25mb' }), async (req, res) 
   }
 });
 
-app.post('/api/reports/:id/evidence', uploadEvidence.single('evidence'), (req, res) => {
+app.post('/api/reports/:id/evidence', uploadEvidence.single('evidence'), async (req, res) => {
   const { id } = req.params;
   const db = readDb();
   const report = db.reports.find((x) => x.id === id);
   if (!report) return res.status(404).json({ error: 'Report not found' });
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
+  let storedPath = null;
+  if (IS_NETLIFY) {
+    storedPath = await uploadEvidenceToSupabase(
+      'evidence',
+      `${id}/${req.file.filename}`,
+      fs.readFileSync(req.file.path),
+      req.file.mimetype,
+    );
+    if (!storedPath) return res.status(503).json({ error: 'Could not persist evidence to Supabase Storage' });
+  }
+
   if (!report.payload) report.payload = {};
   if (!Array.isArray(report.payload.evidenceFiles)) report.payload.evidenceFiles = [];
   report.payload.evidenceFiles.push({
     name: req.file.originalname || req.file.filename,
-    storedName: req.file.filename,
+    storedName: storedPath || req.file.filename,
     size: req.file.size || 0,
     type: req.file.mimetype || 'application/octet-stream',
-    url: '/uploads/' + req.file.filename,
+    url: storedPath ? getSupabaseStorageUrl('evidence', storedPath) : '/uploads/' + req.file.filename,
   });
   writeDb(db);
+  if (IS_NETLIFY) await updateReportInSupabase(report);
   res.json({ ok: true, id });
 });
 
@@ -897,6 +1049,10 @@ async function createCitizenReport(body, files) {
         console.error('Error uploading evidence to Supabase:', err);
       }
     }
+  }
+
+  if (IS_NETLIFY && files.length && evidenceFiles.length !== files.length) {
+    throw new Error('Could not durably upload all report evidence to Supabase Storage');
   }
   
   // Fall back to local files if Supabase upload failed or not available
@@ -1362,8 +1518,21 @@ app.patch('/api/distress/:id', authMiddleware, async (req, res) => {
   res.json(s);
 });
 
-app.post('/api/notices/upload', authMiddleware, uploadEvidence.single('file'), (req, res) => {
+app.post('/api/notices/upload', authMiddleware, uploadEvidence.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  if (IS_NETLIFY) {
+    const storedPath = await uploadEvidenceToSupabase(
+      'evidence',
+      `notices/${req.file.filename}`,
+      fs.readFileSync(req.file.path),
+      req.file.mimetype,
+    );
+    if (!storedPath) return res.status(503).json({ error: 'Could not persist attachment to Supabase Storage' });
+    return res.status(201).json({
+      url: getSupabaseStorageUrl('evidence', storedPath),
+      mimeType: req.file.mimetype,
+    });
+  }
   res.status(201).json({
     url: '/uploads/' + req.file.filename,
     mimeType: req.file.mimetype,
@@ -1430,8 +1599,9 @@ app.get('/', (req, res) => {
   );
 });
 
-ensureDb();
-const server = app.listen(PORT, '0.0.0.0', () => {
+if (!process.env.NETLIFY) {
+  ensureDb();
+  const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('API: http://localhost:' + PORT + '/');
   console.log('Citizen app: run Expo in citizen-mobile/ (points EXPO_PUBLIC_API_URL at this API)');
   console.log('Admin dashboard (dev): http://localhost:5174 — username MELU101 / Melu123!');
@@ -1454,14 +1624,17 @@ const server = app.listen(PORT, '0.0.0.0', () => {
       console.error('Retention purge failed', err);
     }
   }, 60 * 60 * 1000);
-});
+  });
 
-server.on('error', (err) => {
-  if (err && err.code === 'EADDRINUSE') {
-    console.error('Port ' + PORT + ' is already in use.');
-    console.error('Close the other server process or run with a different port (e.g. set PORT=3001).');
-    process.exit(1);
-    return;
-  }
-  throw err;
-});
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error('Port ' + PORT + ' is already in use.');
+      console.error('Close the other server process or run with a different port (e.g. set PORT=3001).');
+      process.exit(1);
+      return;
+    }
+    throw err;
+  });
+}
+
+module.exports = app;
