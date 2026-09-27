@@ -1,5 +1,6 @@
 node_modules/
 citizen-mobile/node_modules/
+citizen-mobile/
 police-admin/node_modules/
 police-admin/dist/
 .env
