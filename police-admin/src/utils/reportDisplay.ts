@@ -180,6 +180,14 @@ export function mapsUrl(location?: string): string | null {
   return `https://www.google.com/maps?q=${coords.lat},${coords.lng}`;
 }
 
+export function directionsUrl(location?: string): string | null {
+  const destination = location?.trim();
+  if (!destination) return null;
+  const coordinates = parseCoordinates(destination);
+  const query = coordinates ? `${coordinates.lat},${coordinates.lng}` : destination;
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(query)}&travelmode=driving`;
+}
+
 export function phoneDialUrl(phone?: string): string | null {
   if (!phone) return null;
   const digits = phone.replace(/\D/g, '');
@@ -198,8 +206,16 @@ export function formatPhoneDisplay(phone?: string): string {
 }
 
 export function reportPreviewLine(report: CitizenReport): string {
+  if (report.anonymous) {
+    return report.location ? `Location: ${report.location}` : 'Location was not captured';
+  }
   if (report.message) {
     const line = report.message.split('\n')[0].trim();
+    return line.length > 90 ? `${line.slice(0, 90)}…` : line;
+  }
+  if (report.submittedFields?.length) {
+    const first = report.submittedFields[0];
+    const line = first.value.trim();
     return line.length > 90 ? `${line.slice(0, 90)}…` : line;
   }
   if (!report.anonymous && report.location) return `📍 ${report.location}`;

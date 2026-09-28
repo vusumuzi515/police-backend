@@ -9,6 +9,7 @@ import {
   countActiveByType,
   countNewByType,
   countSolvedThisMonth,
+  directionsUrl,
   formatPhoneDisplay,
   formatReportStatus,
   isImageEvidence,
@@ -141,11 +142,15 @@ function ReportDetailView({
 }) {
   const meta = reportTypeMeta(report.type);
   const mapLink = mapsUrl(report.location);
+  const reportDirections = directionsUrl(report.location);
+  const reporterDirections = directionsUrl(report.reporterLocationAtSubmission);
   const dialLink = phoneDialUrl(report.phone);
   const showAssist = !isReportClosed(report.status) && report.type !== 'emergency';
   const [officerName, setOfficerName] = useState(report.assignedOfficer?.name || '');
   const [officerBadge, setOfficerBadge] = useState(report.assignedOfficer?.badge || '');
   const [officerUnit, setOfficerUnit] = useState(report.assignedOfficer?.unit || '');
+  const [showReporterDetails, setShowReporterDetails] = useState(false);
+  const [showEvidence, setShowEvidence] = useState(false);
   const [assignmentMessage, setAssignmentMessage] = useState<string | null>(null);
 
   const submitAssignment = async (event: FormEvent<HTMLFormElement>) => {
@@ -175,17 +180,79 @@ function ReportDetailView({
           </span>
         </div>
         <p className="report-detail-meta">{report.id} · {formatDateTime(report.timestamp)}</p>
-        <h3 className="report-detail-title">{report.title}</h3>
+        <div className="report-detail-head-row">
+          <h3 className="report-detail-title">{report.title}</h3>
+          <div className="report-detail-head-actions">
+            {report.evidenceFiles?.length ? (
+              <button
+                type="button"
+                className="btn btn-ghost report-details-toggle"
+                onClick={() => setShowEvidence((current) => !current)}
+                aria-expanded={showEvidence}
+              >
+                {showEvidence ? 'Hide evidence' : `Evidence (${report.evidenceFiles.length})`}
+              </button>
+            ) : null}
+            {!report.anonymous ? (
+              <button
+                type="button"
+                className="btn btn-ghost report-details-toggle"
+                onClick={() => setShowReporterDetails((current) => !current)}
+                aria-expanded={showReporterDetails}
+              >
+                {showReporterDetails ? 'Hide details' : 'Account details'}
+              </button>
+            ) : null}
+          </div>
+        </div>
       </div>
 
       <div className="report-detail-body inbox-detail-scroll">
+        {showEvidence && report.evidenceFiles && report.evidenceFiles.length > 0 ? (
+          <section className="report-detail-section report-evidence-section">
+            <h4 className="detail-section-title">Evidence <span className="detail-section-count">{report.evidenceFiles.length} file{report.evidenceFiles.length === 1 ? '' : 's'}</span></h4>
+            <div className="evidence-gallery">
+              {report.evidenceFiles.map((file) => {
+                const url = mediaUrl(file.url);
+                const image = isImageEvidence(file.type || file.name || file.url);
+                const video = isVideoEvidence(file.type, file.name || file.url);
+                return (
+                  <div key={file.url} className={`evidence-tile${video ? ' evidence-tile-video' : ''}`}>
+                    {image ? (
+                      <a href={url} target="_blank" rel="noreferrer">
+                        <img src={url} alt="" className="evidence-thumb" />
+                      </a>
+                    ) : video ? (
+                      <video controls preload="metadata" playsInline className="evidence-thumb evidence-video" aria-label={`Evidence video: ${file.name || 'video'}`}>
+                        <source src={url} type={file.type || undefined} />
+                        Your browser cannot play this video.
+                      </video>
+                    ) : (
+                      <a href={url} target="_blank" rel="noreferrer" className="evidence-file-link">
+                        {file.name || 'Evidence'}
+                      </a>
+                    )}
+                    <div className="evidence-meta">
+                      <span className="evidence-name">{file.name || 'Evidence file'}</span>
+                      {file.size ? <span className="evidence-size">{(file.size / (1024 * 1024)).toFixed(1)} MB</span> : null}
+                    </div>
+                    <a href={url} target="_blank" rel="noreferrer" className="evidence-open-link">
+                      Open or download
+                    </a>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
+
         {showAssist ? (
           <div className="report-detail-card report-detail-card-assist">
             <p className="report-assist-inline">{meta.assist}</p>
           </div>
         ) : null}
 
-        {!report.anonymous && (report.reporterName || report.nationalId || report.reporterEmail || report.phone || report.location) ? (
+        {!report.anonymous && showReporterDetails && (report.reporterName || report.nationalId || report.reporterEmail || report.phone || report.location || report.reporterAddress || report.reporterCity) ? (
           <section className="report-detail-section">
             <h4 className="detail-section-title">Reporter account</h4>
             <dl className="report-account-list">
@@ -202,6 +269,16 @@ function ReportDetailView({
               {report.reporterEmail ? (
                 <div className="report-account-row">
                   <dt>Email</dt><dd>{report.reporterEmail}</dd>
+                </div>
+              ) : null}
+              {report.reporterCity ? (
+                <div className="report-account-row">
+                  <dt>City</dt><dd>{report.reporterCity}</dd>
+                </div>
+              ) : null}
+              {report.reporterAddress ? (
+                <div className="report-account-row">
+                  <dt>Address</dt><dd>{report.reporterAddress}</dd>
                 </div>
               ) : null}
               {report.phone ? (
@@ -244,54 +321,53 @@ function ReportDetailView({
           </section>
         ) : null}
 
-        <section className="report-detail-section">
-          <h4 className="detail-section-title">Incident details</h4>
-          <p className="detail-message">{report.message || '—'}</p>
-          {report.numberPlate ? (
-            <p className="detail-field-line"><span>Number plate</span>{report.numberPlate}</p>
-          ) : null}
-          {report.submittedFields?.length ? (
-            <dl className="submitted-fields">
-              {report.submittedFields.map((field) => (
-                <div key={field.label} className="submitted-field">
-                  <dt>{field.label}</dt>
-                  <dd>{field.value}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : null}
-        </section>
-
-        {report.evidenceFiles && report.evidenceFiles.length > 0 ? (
-          <section className="report-detail-section">
-            <h4 className="detail-section-title">Evidence <span className="detail-section-count">{report.evidenceFiles.length} file{report.evidenceFiles.length === 1 ? '' : 's'}</span></h4>
-            <div className="evidence-gallery">
-              {report.evidenceFiles.map((f) => {
-                const url = mediaUrl(f.url);
-                const image = isImageEvidence(f.type || f.name || f.url);
-                const video = isVideoEvidence(f.type, f.name || f.url);
-                return (
-                  <div key={f.url} className="evidence-tile">
-                    {image ? (
-                      <a href={url} target="_blank" rel="noreferrer">
-                        <img src={url} alt="" className="evidence-thumb" />
-                      </a>
-                    ) : video ? (
-                      <video controls preload="metadata" className="evidence-thumb">
-                        <source src={url} type={f.type || undefined} />
-                        Your browser cannot play this video. <a href={url} target="_blank" rel="noreferrer">Download the evidence</a>.
-                      </video>
-                    ) : (
-                      <a href={url} target="_blank" rel="noreferrer" className="evidence-file-link">
-                        {f.name || 'Evidence'}
-                      </a>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+        {report.anonymous ? (
+          <section className="report-detail-section anonymous-location-section">
+            <h4 className="detail-section-title">Location at time of report</h4>
+            <p className="anonymous-report-location">{report.location || 'Location was not captured for this report.'}</p>
+            {reportDirections ? (
+              <a href={reportDirections} target="_blank" rel="noreferrer" className="report-directions-link">Get directions</a>
+            ) : null}
+            {mapLink ? <a href={mapLink} target="_blank" rel="noreferrer" className="report-map-link">View map</a> : null}
+            <p className="anonymous-report-time">
+              {report.locationCapturedAt
+                ? `Location captured ${formatDateTime(report.locationCapturedAt)} · `
+                : 'Location not captured · '}
+              Report received {formatDateTime(report.timestamp)}
+            </p>
           </section>
-        ) : null}
+        ) : (
+          <>
+            {report.reporterLocationAtSubmission ? (
+              <section className="report-detail-section anonymous-location-section">
+                <h4 className="detail-section-title">Reporter location at time of report</h4>
+                <p className="anonymous-report-location">{report.reporterLocationAtSubmission}</p>
+                <a href={reporterDirections || undefined} target="_blank" rel="noreferrer" className="report-directions-link">Get directions</a>
+                {report.reporterLocationCapturedAt ? <p className="anonymous-report-time">Captured {formatDateTime(report.reporterLocationCapturedAt)}</p> : null}
+              </section>
+            ) : null}
+            <section className="report-detail-section">
+              <h4 className="detail-section-title">Incident details</h4>
+              <p className="detail-message">{report.message || '—'}</p>
+              {report.location && reportDirections ? (
+                <a href={reportDirections} target="_blank" rel="noreferrer" className="report-directions-link">Get directions to incident location</a>
+              ) : null}
+              {report.numberPlate ? (
+                <p className="detail-field-line"><span>Number plate</span>{report.numberPlate}</p>
+              ) : null}
+              {report.submittedFields?.length ? (
+                <dl className="submitted-fields">
+                  {report.submittedFields.map((field) => (
+                    <div key={field.label} className="submitted-field">
+                      <dt>{field.label}</dt>
+                      <dd>{field.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
+            </section>
+          </>
+        )}
 
         <footer className="report-detail-actions">
           <div className="btn-group report-actions">

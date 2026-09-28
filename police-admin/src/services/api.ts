@@ -160,6 +160,8 @@ export interface DistressSession {
   nationalId?: string;
   reporterPhone?: string;
   reporterEmail?: string;
+  reporterAddress?: string;
+  reporterCity?: string;
   path?: { lat: number; lng: number; ts?: string }[];
   assignedOfficer?: {
     name: string;
@@ -178,6 +180,7 @@ export interface EvidenceFile {
   name: string;
   url: string;
   type?: string;
+  size?: number;
 }
 
 export interface CitizenReport {
@@ -193,7 +196,12 @@ export interface CitizenReport {
   nationalId?: string;
   reporterPhone?: string;
   reporterEmail?: string;
+  reporterAddress?: string;
+  reporterCity?: string;
   location?: string;
+  locationCapturedAt?: string;
+  reporterLocationAtSubmission?: string;
+  reporterLocationCapturedAt?: string;
   numberPlate?: string;
   anonymous: boolean;
   submittedFields?: { label: string; value: string }[];
@@ -311,7 +319,7 @@ export function normalizeReport(raw: ServerReport): CitizenReport {
     id: raw.id,
     type,
     title: reportTitle || (REPORT_LABELS[type] ?? type.replace(/_/g, ' ')),
-    message: normalizeReportMessage(p),
+    message: anon ? '' : normalizeReportMessage(p),
     status: raw.status || 'new',
     timestamp: raw.timestamp || new Date().toISOString(),
     closedAt: typeof raw.closedAt === 'string' ? raw.closedAt : undefined,
@@ -320,10 +328,19 @@ export function normalizeReport(raw: ServerReport): CitizenReport {
     nationalId: anon ? undefined : field('nationalId'),
     reporterPhone: anon ? undefined : (field('reporterPhone') ?? field('phone')),
     reporterEmail: anon ? undefined : field('reporterEmail'),
-    location: anon ? undefined : normalizeReportLocation(p.location),
-    numberPlate: typeof p.numberPlate === 'string' ? p.numberPlate : undefined,
+    location: normalizeReportLocation(p.location),
+    locationCapturedAt:
+      p.location && typeof p.location === 'object' && typeof p.location.capturedAt === 'string'
+        ? p.location.capturedAt
+        : undefined,
+    reporterLocationAtSubmission: normalizeReportLocation(p.reporterLocationAtSubmission),
+    reporterLocationCapturedAt:
+      p.reporterLocationAtSubmission && typeof p.reporterLocationAtSubmission === 'object' && 'capturedAt' in p.reporterLocationAtSubmission && typeof p.reporterLocationAtSubmission.capturedAt === 'string'
+        ? p.reporterLocationAtSubmission.capturedAt
+        : undefined,
+    numberPlate: anon || typeof p.numberPlate !== 'string' ? undefined : p.numberPlate,
     anonymous: anon,
-    submittedFields: normalizeSubmittedFields(p),
+    submittedFields: anon ? [] : normalizeSubmittedFields(p),
     evidenceFiles: Array.isArray(p.evidenceFiles) ? p.evidenceFiles : undefined,
     assignedOfficer: raw.assignedOfficer ?? (p as { assignedOfficer?: CitizenReport['assignedOfficer'] }).assignedOfficer,
   };
@@ -344,6 +361,24 @@ export async function fetchActiveDistress(): Promise<DistressFetchResult> {
       ? data.filter((session): session is DistressSession =>
           session && (session.status === 'active' || session.status === 'acknowledged'),
         )
+      : [];
+    return { ok: true, sessions } as DistressFetchResult;
+  }, { ok: false, reason: 'network' });
+}
+
+export async function fetchRecentDistress(): Promise<DistressFetchResult> {
+  const token = getAuthToken();
+  if (!token) return { ok: false, reason: 'unauthorized' };
+
+  return cachedRequest(`recent-distress:${token}`, 1_000, async () => {
+    const res = await fetch(`${API_BASE}/api/distress/recent`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) return { ok: false, reason: 'unauthorized' as const };
+    if (!res.ok) return { ok: false, reason: 'error' as const };
+    const data = await res.json();
+    const sessions = Array.isArray(data)
+      ? data.filter((session): session is DistressSession => Boolean(session && session.id))
       : [];
     return { ok: true, sessions } as DistressFetchResult;
   }, { ok: false, reason: 'network' });

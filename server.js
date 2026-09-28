@@ -1,10 +1,10 @@
 /**
- * TECHLAW Police shared API with Supabase backend
+ * TECHLAW Police shared API with local and Supabase storage modes
  * Run: npm install && npm start  (from POLICE APP folder)
  * Citizen app: citizen-mobile/ (Expo) → EXPO_PUBLIC_API_URL → this server
  * Admin app:   police-admin/ (Vite) → http://localhost:5174 or /communications after build
  * Default admin login: username MELU101, password Melu123!
- * Database: Supabase PostgreSQL with Storage bucket for evidence
+ * Database and evidence: local JSON/disk in LOCAL_STORAGE_ONLY mode; Supabase otherwise
  */
 const express = require('express');
 const cors = require('cors');
@@ -15,21 +15,26 @@ const crypto = require('crypto');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 
+const envFile = path.join(__dirname, '.env');
+if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
+
+const LOCAL_STORAGE_ONLY = !process.env.NETLIFY && process.env.LOCAL_STORAGE_ONLY === 'true';
 const PORT = process.env.PORT || 3000;
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'prototype-db.json');
-const IS_NETLIFY = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
-const UPLOADS_DIR = IS_NETLIFY
+const IS_NETLIFY = Boolean(process.env.NETLIFY);
+const UPLOADS_DIR = process.env.UPLOADS_DIR || (IS_NETLIFY
   ? path.join(os.tmpdir(), 'police-uploads')
-  : path.join(__dirname, 'uploads');
+  : path.join(__dirname, 'uploads'));
 const NETLIFY_STATE_ID = 'main';
 let netlifyDbState = null;
 let netlifyDbDirty = false;
 
 // Supabase client
-const SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const supabase = SUPABASE_URL && SUPABASE_SERVICE_KEY 
+const SUPABASE_URL = LOCAL_STORAGE_ONLY ? '' : process.env.SUPABASE_URL || 'http://localhost:54321';
+const SUPABASE_SERVICE_KEY = LOCAL_STORAGE_ONLY ? '' : process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const SUPABASE_PUBLISHABLE_KEY = LOCAL_STORAGE_ONLY ? '' : process.env.SUPABASE_PUBLISHABLE_KEY || '';
+const supabase = !LOCAL_STORAGE_ONLY && SUPABASE_URL && SUPABASE_SERVICE_KEY
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
   : null;
 
@@ -37,6 +42,7 @@ const USE_SUPABASE = supabase !== null;
 
 // Debug: Log Supabase configuration on startup
 console.log('=== SUPABASE CONFIGURATION ===');
+console.log('LOCAL_STORAGE_ONLY:', LOCAL_STORAGE_ONLY);
 console.log('SUPABASE_URL:', SUPABASE_URL ? 'SET' : 'NOT SET');
 console.log('SUPABASE_SERVICE_KEY:', SUPABASE_SERVICE_KEY ? 'SET' : 'NOT SET');
 console.log('USE_SUPABASE (client initialized):', USE_SUPABASE);
@@ -62,6 +68,8 @@ function initialDbState() {
     citizens: [],
     citizenOtps: {},
     citizenSessions: {},
+    reportUploadIntents: {},
+    distressUploadIntents: {},
     settings: normalizeSettings(null),
   };
 }
@@ -122,7 +130,17 @@ app.use('/api', async (req, res, next) => {
     netlifyDbState.citizens ||= [];
     netlifyDbState.citizenOtps ||= {};
     netlifyDbState.citizenSessions ||= {};
+    netlifyDbState.reportUploadIntents ||= {};
+    netlifyDbState.distressUploadIntents ||= {};
     netlifyDbState.settings = normalizeSettings(netlifyDbState.settings);
+    for (const intents of [netlifyDbState.reportUploadIntents, netlifyDbState.distressUploadIntents]) {
+      for (const [intentId, intent] of Object.entries(intents)) {
+        if (!intent || intent.expiresAt <= Date.now()) {
+          delete intents[intentId];
+          netlifyDbDirty = true;
+        }
+      }
+    }
     netlifyDbDirty = netlifyDbDirty || !data.state?.settings;
 
     const originalEnd = res.end.bind(res);
@@ -227,6 +245,8 @@ function ensureDb() {
     if (!Array.isArray(db.citizens)) db.citizens = [];
     if (!db.citizenOtps || typeof db.citizenOtps !== 'object') db.citizenOtps = {};
     if (!db.citizenSessions || typeof db.citizenSessions !== 'object') db.citizenSessions = {};
+    if (!db.reportUploadIntents || typeof db.reportUploadIntents !== 'object') db.reportUploadIntents = {};
+    if (!db.distressUploadIntents || typeof db.distressUploadIntents !== 'object') db.distressUploadIntents = {};
     db.settings = normalizeSettings(db.settings);
 
     // Ensure requested default account exists and has the requested password.
@@ -248,6 +268,8 @@ function readDb() {
   const db = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
   if (!Array.isArray(db.distressSessions)) db.distressSessions = [];
   if (!Array.isArray(db.reports)) db.reports = [];
+  if (!db.reportUploadIntents || typeof db.reportUploadIntents !== 'object') db.reportUploadIntents = {};
+  if (!db.distressUploadIntents || typeof db.distressUploadIntents !== 'object') db.distressUploadIntents = {};
   db.settings = normalizeSettings(db.settings);
   return db;
 }
@@ -456,6 +478,191 @@ function getSupabaseStorageUrl(bucket, path) {
   return `${baseUrl}/storage/v1/object/public/${bucket}/${path}`;
 }
 
+const MAX_DIRECT_STORAGE_UPLOAD_BYTES = 50 * 1024 * 1024;
+const UPLOAD_INTENT_TTL_MS = 30 * 60 * 1000;
+const ALLOWED_MEDIA_TYPES = new Set([
+  'image/jpeg', 'image/png', 'image/webp', 'image/heic',
+  'video/mp4', 'video/quicktime', 'video/webm',
+  'audio/mp4', 'audio/m4a', 'audio/wav', 'audio/mpeg', 'audio/aac',
+]);
+
+function safeUploadName(value) {
+  const name = path.basename(String(value || 'evidence')).replace(/[^a-zA-Z0-9._-]/g, '_');
+  return name.slice(-120) || 'evidence';
+}
+
+function hashUploadToken(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+async function issueSignedStorageUpload(req, ownerId, kind, body, intent) {
+  const mimeType = String(body.mimeType || '').toLowerCase().split(';')[0].trim();
+  const size = Number(body.size);
+  if (!ALLOWED_MEDIA_TYPES.has(mimeType)) {
+    const error = new Error('Unsupported media type');
+    error.status = 415;
+    throw error;
+  }
+  if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_DIRECT_STORAGE_UPLOAD_BYTES) {
+    const error = new Error('File size must be between 1 byte and 50 MB');
+    error.status = 413;
+    throw error;
+  }
+  if (intent.expiresAt <= Date.now()) {
+    const error = new Error('Upload authorization expired');
+    error.status = 410;
+    throw error;
+  }
+  const issuedPaths = Object.keys(intent.issued || {});
+  if (issuedPaths.length >= intent.maxFiles) {
+    const error = new Error('Upload limit reached for this submission');
+    error.status = 409;
+    throw error;
+  }
+
+  const fileName = safeUploadName(body.fileName);
+  const storagePath = `${kind}/${ownerId}/${crypto.randomUUID()}-${fileName}`;
+  if (LOCAL_STORAGE_ONLY) {
+    const token = crypto.randomBytes(32).toString('base64url');
+    const host = req.get('host') || `localhost:${PORT}`;
+    intent.issued ||= {};
+    intent.issued[storagePath] = {
+      mimeType,
+      size,
+      fileName,
+      issuedAt: Date.now(),
+      localTokenHash: hashUploadToken(token),
+    };
+    return {
+      path: storagePath,
+      token,
+      url: `${req.protocol}://${host}/api/local-evidence-upload/${token}`,
+      apiKey: 'local-storage',
+      mimeType,
+      maxBytes: MAX_DIRECT_STORAGE_UPLOAD_BYTES,
+    };
+  }
+  if (!USE_SUPABASE || !SUPABASE_PUBLISHABLE_KEY) {
+    const error = new Error('Supabase signed uploads are not configured');
+    error.status = 503;
+    throw error;
+  }
+  const { data, error } = await supabase.storage.from('evidence').createSignedUploadUrl(storagePath);
+  if (error || !data?.signedUrl || !data?.token) {
+    console.error('Could not create Supabase signed upload URL:', error);
+    const uploadError = new Error('Could not authorize upload to Supabase Storage');
+    uploadError.status = 503;
+    throw uploadError;
+  }
+  intent.issued ||= {};
+  intent.issued[storagePath] = { mimeType, size, issuedAt: Date.now() };
+  return {
+    path: storagePath,
+    token: data.token,
+    url: data.signedUrl,
+    apiKey: SUPABASE_PUBLISHABLE_KEY,
+    mimeType,
+    maxBytes: MAX_DIRECT_STORAGE_UPLOAD_BYTES,
+  };
+}
+
+async function confirmSignedStorageUpload(storagePath, intent) {
+  const issued = intent.issued && intent.issued[storagePath];
+  if (!issued || intent.expiresAt <= Date.now()) {
+    const error = new Error('Upload authorization is invalid or expired');
+    error.status = 403;
+    throw error;
+  }
+  if (intent.completed?.[storagePath]) {
+    const error = new Error('This upload has already been completed');
+    error.status = 409;
+    throw error;
+  }
+  if (LOCAL_STORAGE_ONLY) {
+    const localFilename = issued.localFilename;
+    const localPath = localFilename && path.join(UPLOADS_DIR, path.basename(localFilename));
+    if (!localPath || !fs.existsSync(localPath)) {
+      const missingError = new Error('Uploaded file was not found in local storage');
+      missingError.status = 409;
+      throw missingError;
+    }
+    const storedSize = fs.statSync(localPath).size;
+    if (storedSize !== issued.size) {
+      const invalidError = new Error('Uploaded file does not match its authorized size');
+      invalidError.status = 422;
+      throw invalidError;
+    }
+    intent.completed ||= {};
+    intent.completed[storagePath] = true;
+    return { ...issued, path: storagePath, localFilename };
+  }
+  const { data, error } = await supabase.storage.from('evidence').info(storagePath);
+  if (error || !data) {
+    const missingError = new Error('Uploaded file was not found in Supabase Storage');
+    missingError.status = 409;
+    throw missingError;
+  }
+  const storedSize = Number(data.size ?? data.metadata?.size);
+  const storedMimeType = String(data.metadata?.mimetype || data.metadata?.contentType || data.contentType || '').toLowerCase();
+  if (storedSize !== issued.size || (storedMimeType && storedMimeType !== issued.mimeType)) {
+    const invalidError = new Error('Uploaded file does not match its authorized size or media type');
+    invalidError.status = 422;
+    throw invalidError;
+  }
+  intent.completed ||= {};
+  intent.completed[storagePath] = true;
+  return { ...issued, path: storagePath };
+}
+
+app.put(
+  '/api/local-evidence-upload/:token',
+  express.raw({ type: '*/*', limit: `${MAX_DIRECT_STORAGE_UPLOAD_BYTES}b` }),
+  (req, res) => {
+    if (!LOCAL_STORAGE_ONLY) return res.sendStatus(404);
+    const content = req.body;
+    if (!Buffer.isBuffer(content) || content.length === 0) {
+      return res.status(400).json({ error: 'No evidence file uploaded' });
+    }
+
+    const state = readDb();
+    const tokenHash = hashUploadToken(req.params.token);
+    let intent;
+    let issued;
+    for (const intentGroup of ['reportUploadIntents', 'distressUploadIntents']) {
+      for (const candidate of Object.values(state[intentGroup] || {})) {
+        const entry = Object.entries(candidate.issued || {}).find(
+          ([, upload]) => upload.localTokenHash === tokenHash,
+        );
+        if (entry) {
+          intent = candidate;
+          issued = entry[1];
+          break;
+        }
+      }
+      if (issued) break;
+    }
+    if (!intent || !issued) return res.status(403).json({ error: 'Invalid upload authorization' });
+    if (intent.expiresAt <= Date.now()) return res.status(410).json({ error: 'Upload authorization expired' });
+    if (issued.localFilename) return res.status(409).json({ error: 'This upload has already been received' });
+
+    const mimeType = String(req.get('content-type') || '').toLowerCase().split(';')[0].trim();
+    if (content.length !== issued.size || mimeType !== issued.mimeType) {
+      return res.status(422).json({ error: 'Uploaded file does not match its authorized size or media type' });
+    }
+
+    const localFilename = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${safeUploadName(issued.fileName)}`;
+    try {
+      fs.writeFileSync(path.join(UPLOADS_DIR, localFilename), content, { flag: 'wx' });
+      issued.localFilename = localFilename;
+      writeDb(state);
+      return res.status(204).end();
+    } catch (error) {
+      console.error('Could not save local evidence upload:', error);
+      return res.status(500).json({ error: 'Could not save evidence to local storage' });
+    }
+  },
+);
+
 async function persistPanicAudio(sessionId, filename) {
   if (!filename) return false;
   const localPath = path.join(UPLOADS_DIR, filename);
@@ -506,7 +713,7 @@ async function persistPanicAudio(sessionId, filename) {
 
 function citizenIdentityFromBody(body) {
   const identity = {};
-  for (const field of ['reporterName', 'nationalId', 'reporterPhone', 'reporterEmail']) {
+  for (const field of ['reporterName', 'nationalId', 'reporterPhone', 'reporterEmail', 'reporterAddress', 'reporterCity']) {
     const value = String(body[field] || '').trim();
     if (value) identity[field] = value;
   }
@@ -687,6 +894,36 @@ function listOpenDistressSessions(db) {
       if (pa !== pb) return pa - pb;
       return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime();
     });
+}
+
+function listRecentDistressSessions(db) {
+  return db.distressSessions
+    .filter((session) => session && (session.audioUrl || session.audioUrls?.length || session.status === 'active' || session.status === 'acknowledged'))
+    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+    .slice(0, 200);
+}
+
+async function withSignedDistressMedia(sessions) {
+  if (!USE_SUPABASE) return sessions;
+  return Promise.all(sessions.map(async (session) => {
+    if (!session.audioStoragePath) return session;
+    try {
+      const { data, error } = await supabase.storage
+        .from('evidence')
+        .createSignedUrl(session.audioStoragePath, 60 * 60);
+      if (error || !data?.signedUrl) throw error || new Error('No signed URL returned');
+      const audioUrl = data.signedUrl;
+      return {
+        ...session,
+        audioUrl,
+        audioUrls: [audioUrl],
+        audioRecords: [{ url: audioUrl, uploadedAt: session.audioUploadedAt || null }],
+      };
+    } catch (error) {
+      console.error('Could not create Get Help audio read URL:', error);
+      return { ...session, audioUrl: null, audioUrls: [], audioRecords: [] };
+    }
+  }));
 }
 
 function hashPassword(password, saltHex) {
@@ -973,6 +1210,79 @@ app.post('/api/reports/json', express.json({ limit: '25mb' }), async (req, res) 
   }
 });
 
+app.post('/api/reports/metadata', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const directUploadCount = Number(body.directUploadCount);
+    if (!Number.isInteger(directUploadCount) || directUploadCount < 1 || directUploadCount > 10) {
+      return res.status(400).json({ error: 'A direct upload count between 1 and 10 is required' });
+    }
+    const { directUploadCount: _directUploadCount, ...reportBody } = body;
+    const { report } = await createCitizenReport(reportBody, []);
+    const uploadToken = crypto.randomBytes(32).toString('base64url');
+    const db = readDb();
+    db.reportUploadIntents[report.id] = {
+      tokenHash: hashUploadToken(uploadToken),
+      expiresAt: Date.now() + UPLOAD_INTENT_TTL_MS,
+      maxFiles: directUploadCount,
+      issued: {},
+      completed: {},
+    };
+    writeDb(db);
+    res.status(201).json({ id: report.id, uploadToken });
+  } catch (err) {
+    console.error('reports/metadata failed', err);
+    res.status(503).json({ error: 'Could not create report for media upload' });
+  }
+});
+
+app.post('/api/reports/:id/evidence/upload-ticket', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = readDb();
+    const intent = db.reportUploadIntents[id];
+    if (!intent || intent.tokenHash !== hashUploadToken(req.body?.uploadToken)) {
+      return res.status(403).json({ error: 'Invalid upload authorization' });
+    }
+    const ticket = await issueSignedStorageUpload(req, id, 'reports', req.body || {}, intent);
+    writeDb(db);
+    res.json(ticket);
+  } catch (err) {
+    console.error('Could not issue report upload ticket:', err);
+    res.status(err.status || 503).json({ error: err.message || 'Could not authorize report media upload' });
+  }
+});
+
+app.post('/api/reports/:id/evidence/complete', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = readDb();
+    const report = db.reports.find((item) => item.id === id);
+    const intent = db.reportUploadIntents[id];
+    if (!report) return res.status(404).json({ error: 'Report not found' });
+    if (!intent || intent.tokenHash !== hashUploadToken(req.body?.uploadToken)) {
+      return res.status(403).json({ error: 'Invalid upload authorization' });
+    }
+    const file = await confirmSignedStorageUpload(String(req.body?.path || ''), intent);
+    if (!report.payload) report.payload = {};
+    if (!Array.isArray(report.payload.evidenceFiles)) report.payload.evidenceFiles = [];
+    report.payload.evidenceFiles.push({
+      name: safeUploadName(req.body?.fileName),
+      storedName: file.localFilename || file.path,
+      size: file.size,
+      type: file.mimeType,
+      url: file.localFilename ? `/uploads/${file.localFilename}` : getSupabaseStorageUrl('evidence', file.path),
+    });
+    writeDb(db);
+    const saved = await updateReportInSupabase(report);
+    if (!saved) return res.status(503).json({ error: 'Could not attach uploaded media to the report' });
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('Could not complete report media upload:', err);
+    res.status(err.status || 503).json({ error: err.message || 'Could not complete report media upload' });
+  }
+});
+
 app.post('/api/reports/:id/evidence', uploadEvidence.single('evidence'), async (req, res) => {
   const { id } = req.params;
   const db = readDb();
@@ -1018,13 +1328,16 @@ async function createCitizenReport(body, files) {
   };
   const payload = { ...body };
   const identity = payload.identity && typeof payload.identity === 'object' ? payload.identity : {};
-  for (const field of ['reporterName', 'nationalId', 'reporterPhone', 'reporterEmail']) {
+  for (const field of ['reporterName', 'nationalId', 'reporterPhone', 'reporterEmail', 'reporterAddress', 'reporterCity']) {
     if (!payload[field] && identity[field]) payload[field] = String(identity[field]).trim();
   }
   if (typeof payload.anonymous === 'string') {
     payload.anonymous = payload.anonymous === 'true';
   }
   if (typeof payload.location === 'string') payload.location = parseJsonField(payload.location, payload.location);
+  if (typeof payload.reporterLocationAtSubmission === 'string') {
+    payload.reporterLocationAtSubmission = parseJsonField(payload.reporterLocationAtSubmission, undefined);
+  }
   if (typeof payload.deviceInfo === 'string') payload.deviceInfo = parseJsonField(payload.deviceInfo, {});
   
   let evidenceFiles = [];
@@ -1092,6 +1405,9 @@ async function createCitizenReport(body, files) {
     };
     const result = await createReportInSupabase(supabaseReport);
     console.error('🟡 [createCitizenReport] Supabase result:', result ? '✅ SAVED' : '❌ FAILED');
+    if (IS_NETLIFY && !result) {
+      throw new Error('Supabase did not confirm saving the citizen report');
+    }
   } else {
     console.error('🔴 [createCitizenReport] USE_SUPABASE=false, local JSON only');
   }
@@ -1391,6 +1707,7 @@ app.post('/api/distress/start', async (req, res) => {
     lastLat: Number.isFinite(lat) ? lat : null,
     lastLng: Number.isFinite(lng) ? lng : null,
     lastAccuracy: body.accuracy != null ? parseFloat(body.accuracy) : null,
+    ...citizenIdentityFromBody(body),
     path: []
   };
   if (Number.isFinite(lat) && Number.isFinite(lng)) {
@@ -1435,7 +1752,14 @@ app.get('/api/distress/active', authMiddleware, async (req, res) => {
   const db = await loadDistressDb();
   if (!Array.isArray(db.distressSessions)) db.distressSessions = [];
   purgeExpiredRecords(db);
-  res.json(listOpenDistressSessions(db));
+  res.json(await withSignedDistressMedia(listOpenDistressSessions(db)));
+});
+
+app.get('/api/distress/recent', authMiddleware, async (req, res) => {
+  const db = await loadDistressDb();
+  if (!Array.isArray(db.distressSessions)) db.distressSessions = [];
+  purgeExpiredRecords(db);
+  res.json(await withSignedDistressMedia(listRecentDistressSessions(db)));
 });
 
 /** Debug: same data without auth — prototype only; remove in production */
@@ -1505,8 +1829,9 @@ app.patch('/api/distress/:id', authMiddleware, async (req, res) => {
   }
 
   if (status === 'resolved') {
-    s.status = 'resolved';
-    s.resolvedAt = new Date().toISOString();
+    db.distressSessions = db.distressSessions.filter((session) => session.id !== id);
+    await saveDistressDb(db);
+    return res.json({ ok: true, deleted: true, id });
   } else if (status === 'acknowledged') {
     s.status = 'acknowledged';
     s.acknowledgedAt = new Date().toISOString();
@@ -1516,6 +1841,62 @@ app.patch('/api/distress/:id', authMiddleware, async (req, res) => {
   }
   await saveDistressDb(db);
   res.json(s);
+});
+
+app.post('/api/citizen/emergency/panic/start-upload', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const db = await loadDistressDb();
+    const started = await applyPanicToSession(db, body, null);
+    const sessionId = started.payload.sessionId;
+    const uploadToken = crypto.randomBytes(32).toString('base64url');
+    const state = readDb();
+    state.distressUploadIntents[sessionId] = {
+      tokenHash: hashUploadToken(uploadToken),
+      expiresAt: Date.now() + UPLOAD_INTENT_TTL_MS,
+      maxFiles: 1,
+      issued: {},
+      completed: {},
+    };
+    const ticket = await issueSignedStorageUpload(req, sessionId, 'panic', body, state.distressUploadIntents[sessionId]);
+    writeDb(state);
+    res.status(201).json({ ...ticket, sessionId, uploadToken, ok: true });
+  } catch (err) {
+    console.error('Could not start direct Get Help audio upload:', err);
+    res.status(err.status || 503).json({ error: err.message || 'Could not start Get Help audio upload' });
+  }
+});
+
+app.post('/api/citizen/emergency/panic/complete-upload', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const sessionId = String(body.sessionId || '');
+    const state = readDb();
+    const intent = state.distressUploadIntents[sessionId];
+    if (!intent || intent.tokenHash !== hashUploadToken(body.uploadToken)) {
+      return res.status(403).json({ error: 'Invalid upload authorization' });
+    }
+    const file = await confirmSignedStorageUpload(String(body.path || ''), intent);
+    const db = await loadDistressDb();
+    const session = db.distressSessions.find((item) => item.id === sessionId);
+    if (!session) return res.status(404).json({ error: 'Get Help session not found' });
+    const audioUrl = file.localFilename
+      ? `/uploads/${file.localFilename}`
+      : getSupabaseStorageUrl('evidence', file.path);
+    session.audioUrl = audioUrl;
+    session.audioUrls = [audioUrl];
+    session.audioRecords = [{ url: audioUrl, uploadedAt: new Date().toISOString() }];
+    session.audioUploadedAt = new Date().toISOString();
+    session.audioStoragePath = file.localFilename || file.path;
+    session.audioStorage = file.localFilename ? 'local' : 'supabase';
+    await saveDistressDb(db);
+    delete state.distressUploadIntents[sessionId];
+    writeDb(state);
+    res.json({ ok: true, sessionId, audioUrl });
+  } catch (err) {
+    console.error('Could not complete direct Get Help audio upload:', err);
+    res.status(err.status || 503).json({ error: err.message || 'Could not complete Get Help audio upload' });
+  }
 });
 
 app.post('/api/notices/upload', authMiddleware, uploadEvidence.single('file'), async (req, res) => {
@@ -1599,7 +1980,7 @@ app.get('/', (req, res) => {
   );
 });
 
-if (!IS_NETLIFY) {
+if (!process.env.NETLIFY) {
   ensureDb();
   const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('API: http://localhost:' + PORT + '/');
