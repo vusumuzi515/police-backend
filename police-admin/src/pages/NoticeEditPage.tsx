@@ -106,10 +106,10 @@ export function NoticeEditPage() {
     if (isNew) {
       const newId = createNotice(form);
       publishNotice(newId);
-      const sent = await publishNoticeToApi(form);
-      if (!sent) {
+      const result = await publishNoticeToApi(form);
+      if (!result.ok) {
         alert(
-          'Saved in this browser, but could not reach the police server. Run npm start in the POLICE APP folder, then publish again.',
+          `Saved in this browser, but could not publish to the police server: ${result.error}`,
         );
       } else {
         setPublishMessage('Published to the citizen app.');
@@ -120,10 +120,10 @@ export function NoticeEditPage() {
     if (existing) {
       updateNotice(existing.id, form);
       publishNotice(existing.id);
-      const sent = await publishNoticeToApi(form);
-      if (!sent) {
+      const result = await publishNoticeToApi(form);
+      if (!result.ok) {
         alert(
-          'Updated locally, but could not reach the police server. Run npm start in the POLICE APP folder, then publish again.',
+          `Updated locally, but could not publish to the police server: ${result.error}`,
         );
       } else {
         setPublishMessage('Published to the citizen app.');

@@ -34,6 +34,7 @@ export function MonitoringPage() {
     authenticated,
     fetchError,
     refresh,
+    removeSession,
   } = useLiveMonitoring();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [direction, setDirection] = useState<SignalDirection | null>(null);
@@ -72,6 +73,7 @@ export function MonitoringPage() {
       }
       if (ok) {
         if (action === 'resolve') {
+          removeSession(selected.id);
           setSelectedId(null);
           autoFocusedRef.current = false;
         }
@@ -80,7 +82,7 @@ export function MonitoringPage() {
     } finally {
       setActionBusy(false);
     }
-  }, [selected, officer, refresh]);
+  }, [selected, officer, refresh, removeSession]);
 
   useEffect(() => {
     if (sessions.length === 0) {
@@ -196,12 +198,14 @@ export function MonitoringPage() {
               {selected.callerNumber ? (
                 <span className="map-incident-caller">Call: {selected.callerNumber}</span>
               ) : null}
-              {selected.reporterName || selected.reporterPhone || selected.reporterEmail || selected.nationalId ? (
+              {selected.reporterName || selected.reporterPhone || selected.reporterEmail || selected.nationalId || selected.reporterAddress || selected.reporterCity ? (
                 <span className="map-incident-caller">
                   Citizen: {selected.reporterName || 'Account holder'}
                   {selected.reporterPhone ? ` · ${selected.reporterPhone}` : ''}
                   {selected.reporterEmail ? ` · ${selected.reporterEmail}` : ''}
                   {selected.nationalId ? ` · ID ${selected.nationalId}` : ''}
+                  {selected.reporterCity ? ` · ${selected.reporterCity}` : ''}
+                  {selected.reporterAddress ? ` · ${selected.reporterAddress}` : ''}
                 </span>
               ) : null}
               {isFacataSession(selected) && selected.callAnswered ? (

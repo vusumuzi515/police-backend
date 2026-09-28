@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CitizenReport, DistressSession } from '../services/api';
 import {
   fetchActiveDistress,
+  fetchRecentDistress,
   fetchPublicNotices,
   fetchReports,
   getAuthToken,
@@ -47,6 +48,9 @@ export function useLiveMonitoring() {
   const knownIdsRef = useRef<Set<string>>(new Set());
   const refreshingRef = useRef(false);
   const authenticated = Boolean(getAuthToken());
+  const removeSession = useCallback((id: string) => {
+    setSessions((current) => current.filter((session) => session.id !== id));
+  }, []);
 
   const refresh = useCallback(async () => {
     if (refreshingRef.current) return;
@@ -62,9 +66,15 @@ export function useLiveMonitoring() {
     }
 
     try {
-      const distressResult = await fetchActiveDistress();
-      const reps = await fetchReports();
-      const pub = await fetchPublicNotices().catch(() => []);
+      const [activeResult, recentResult] = await Promise.all([fetchActiveDistress(), fetchRecentDistress()]);
+      const distressResult = activeResult.ok
+        ? {
+            ok: true as const,
+            sessions: [...activeResult.sessions, ...(recentResult.ok ? recentResult.sessions : [])].filter(
+              (session, index, all) => all.findIndex((candidate) => candidate.id === session.id) === index,
+            ),
+          }
+        : activeResult;
 
       if (!distressResult.ok) {
         setApiOnline(false);
@@ -77,9 +87,7 @@ export function useLiveMonitoring() {
           setFetchError('Could not load live feed');
         }
       } else {
-        const sorted = sortDistressSessions(
-          distressResult.sessions.filter(isRecentUnresolvedAlert),
-        );
+        const sorted = sortDistressSessions(distressResult.sessions);
         const newIds = sorted.filter((s) => !knownIdsRef.current.has(s.id)).map((s) => s.id);
         if (knownIdsRef.current.size > 0 && newIds.length > 0) {
           playNewAlertTone();
@@ -91,8 +99,9 @@ export function useLiveMonitoring() {
         setLastSync(new Date());
       }
 
-      setReports(reps);
-      setNotices(pub);
+      // Keep live alerts independent from slower reports/notices requests.
+      void fetchReports().then(setReports).catch(() => undefined);
+      void fetchPublicNotices().then(setNotices).catch(() => undefined);
     } catch {
       setApiOnline(false);
       setFetchError('Cannot reach police server');
@@ -118,7 +127,8 @@ export function useLiveMonitoring() {
     authenticated,
     fetchError,
     refresh,
-    activeCount: sessions.length,
+    removeSession,
+    activeCount: sessions.filter(isRecentUnresolvedAlert).length,
     highPriorityCount: sessions.filter((s) => s.priority === 'high' || s.source === 'panic_button' || s.source === 'citizen_mobile').length,
     newReportCount: reports.filter((r) => r.status === 'new').length,
   };
