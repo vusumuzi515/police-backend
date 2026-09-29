@@ -4,9 +4,10 @@ import { Layout } from '../components/Layout';
 import { StatusBadge } from '../components/NoticePreview';
 import { isNoticeLive } from '../data/seedNotices';
 import { useNotices } from '../store/NoticesContext';
-import { fetchActiveDistress, fetchReports } from '../services/api';
+import { fetchReports } from '../services/api';
 import { formatRelativeTime, formatExpiry } from '../utils/formatTime';
 import { CATEGORY_LABELS } from '../types/notice';
+import { useLiveMonitoring } from '../hooks/useLiveMonitoring';
 
 const WORKSPACE_CARDS = [
   {
@@ -38,27 +39,31 @@ const WORKSPACE_CARDS = [
 
 export function DashboardPage() {
   const { notices } = useNotices();
-  const [activeSessions, setActiveSessions] = useState(0);
+  const { activeCount: activeSessions, newAlertId } = useLiveMonitoring({ fetchSupplemental: false });
   const [reportTotal, setReportTotal] = useState(0);
   const [newReports, setNewReports] = useState(0);
+  const [highlightNewHelp, setHighlightNewHelp] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    const loadDashboard = async () => {
-      const distress = await fetchActiveDistress();
-      if (cancelled) return;
-      if (distress.ok) setActiveSessions(distress.sessions.length);
-
+    const loadReports = async () => {
       const reports = await fetchReports();
       if (cancelled) return;
       setReportTotal(reports.length);
       setNewReports(reports.filter((r) => r.status === 'new').length);
     };
-    void loadDashboard();
+    void loadReports();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!newAlertId) return;
+    setHighlightNewHelp(true);
+    const timeoutId = window.setTimeout(() => setHighlightNewHelp(false), 10_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [newAlertId]);
 
   const live = notices.filter(isNoticeLive);
   const drafts = notices.filter((n) => n.status === 'draft');
@@ -94,9 +99,16 @@ export function DashboardPage() {
     >
       <div className="stats-grid stats-grid-nav">
         {WORKSPACE_CARDS.map((card) => (
-          <Link key={card.to} to={card.to} className={`stat-card stat-card-link stat-${card.accent}`}>
+          <Link
+            key={card.to}
+            to={card.to}
+            className={`stat-card stat-card-link stat-${card.accent}${card.accent === 'monitor' && highlightNewHelp ? ' stat-card-new-alert' : ''}`}
+          >
             <div className="stat-top">
               <span className="label">{card.label}</span>
+              {card.accent === 'monitor' && highlightNewHelp ? (
+                <span className="stat-alert-badge" role="status">NEW GET HELP</span>
+              ) : null}
             </div>
             <div className="value">{cardValues[card.accent]}</div>
             <p className="stat-desc">{cardDesc[card.accent]}</p>

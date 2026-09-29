@@ -37,7 +37,8 @@ function playNewAlertTone() {
   }
 }
 
-export function useLiveMonitoring() {
+export function useLiveMonitoring(options: { fetchSupplemental?: boolean } = {}) {
+  const fetchSupplemental = options.fetchSupplemental ?? true;
   const [sessions, setSessions] = useState<DistressSession[]>([]);
   const [reports, setReports] = useState<CitizenReport[]>([]);
   const [notices, setNotices] = useState<{ id: string; title: string; timestamp?: string }[]>([]);
@@ -45,7 +46,9 @@ export function useLiveMonitoring() {
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [apiOnline, setApiOnline] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [newAlertId, setNewAlertId] = useState<string | null>(null);
   const knownIdsRef = useRef<Set<string>>(new Set());
+  const hasLoadedSessionsRef = useRef(false);
   const refreshingRef = useRef(false);
   const authenticated = Boolean(getAuthToken());
   const removeSession = useCallback((id: string) => {
@@ -89,19 +92,22 @@ export function useLiveMonitoring() {
       } else {
         const sorted = sortDistressSessions(distressResult.sessions);
         const newIds = sorted.filter((s) => !knownIdsRef.current.has(s.id)).map((s) => s.id);
-        if (knownIdsRef.current.size > 0 && newIds.length > 0) {
+        if (hasLoadedSessionsRef.current && newIds.length > 0) {
           playNewAlertTone();
+          setNewAlertId(newIds[newIds.length - 1]);
         }
         for (const s of sorted) knownIdsRef.current.add(s.id);
+        hasLoadedSessionsRef.current = true;
         setSessions(sorted);
         setApiOnline(true);
         setFetchError(null);
         setLastSync(new Date());
       }
 
-      // Keep live alerts independent from slower reports/notices requests.
-      void fetchReports().then(setReports).catch(() => undefined);
-      void fetchPublicNotices().then(setNotices).catch(() => undefined);
+      if (fetchSupplemental) {
+        void fetchReports().then(setReports).catch(() => undefined);
+        void fetchPublicNotices().then(setNotices).catch(() => undefined);
+      }
     } catch {
       setApiOnline(false);
       setFetchError('Cannot reach police server');
@@ -109,7 +115,7 @@ export function useLiveMonitoring() {
       setLoading(false);
       refreshingRef.current = false;
     }
-  }, []);
+  }, [fetchSupplemental]);
 
   useEffect(() => {
     void refresh();
@@ -126,6 +132,7 @@ export function useLiveMonitoring() {
     apiOnline,
     authenticated,
     fetchError,
+    newAlertId,
     refresh,
     removeSession,
     activeCount: sessions.filter(isRecentUnresolvedAlert).length,

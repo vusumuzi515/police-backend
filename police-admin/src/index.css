@@ -834,6 +834,38 @@ a { color: inherit; text-decoration: none; }
 .stat-create::before { background: var(--gold); }
 .stat-feed::before { background: var(--success); }
 
+.stat-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.stat-alert-badge {
+  flex-shrink: 0;
+  padding: 0.25rem 0.4rem;
+  background: #e53e3e;
+  color: #fff;
+  font-size: 0.58rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.04em;
+}
+
+.stat-card-new-alert .value {
+  color: #c53030;
+  animation: monitor-value-pulse 1s ease-in-out infinite;
+}
+
+@keyframes monitor-value-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(1.08); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stat-card-new-alert .value { animation: none; }
+}
+
 .stat-card .label {
   font-size: 0.72rem;
   font-weight: 600;
